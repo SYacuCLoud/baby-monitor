@@ -1,0 +1,19 @@
+Look at this photo only. Output one JSON object. Do not guess. If unsure: should_alert false, rule null.
+
+Schema:
+{"should_alert":false,"baby_present":false,"face_visible":false,"rule":null,"reason":""}
+
+face_visible: true if any skin of an eye, cheek, mouth, or nose is visible.
+
+Rules, independently:
+- face_cover: fabric covers the mouth AND nose. A visible eye or cheek does not cancel this.
+- face_down: face pressed into the mattress, not fabric.
+- climbing: on the crib rail. Face may be visible.
+- empty: no baby and no adult.
+
+Do not alert if the baby is present, the face is visible, and fabric is only on the body or shoulders.
+
+If should_alert is false, rule must be null.
+If should_alert is true, rule must be one key above.
+Do not set face_cover only because the head is out of frame.
+reason: one Korean sentence of what is actually visible. Do not copy this prompt.

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Baby Monitor Architecture & Flow</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --card-bg: #1e293b;
+    --border: #334155;
+    --text: #f8fafc;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --success: #10b981;
+  }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { margin-top: 0; font-size: 22px; display: flex; align-items: center; gap: 8px; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 9999px; background: #0369a1; color: #e0f2fe; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h2 { font-size: 16px; margin-top: 0; margin-bottom: 12px; color: var(--accent); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  
+  /* Pipeline Flow */
+  .flow { display: flex; flex-direction: column; gap: 10px; position: relative; }
+  .node {
+    background: #0f172a;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    position: relative;
+  }
+  .node-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .node-desc { font-size: 12px; color: var(--muted); }
+  .arrow { text-align: center; color: var(--muted); font-size: 14px; line-height: 1; }
+  
+  /* Status pill */
+  .pill { font-size: 11px; padding: 1px 6px; border-radius: 4px; font-weight: normal; }
+  .pill.danger { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid #ef4444; }
+  .pill.success { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid #10b981; }
+  .pill.warn { background: rgba(245, 158, 11, 0.2); color: #fcd34d; border: 1px solid #f59e0b; }
+
+  /* Rules Table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  
+  /* Log box */
+  pre {
+    background: #090d16;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    overflow-x: auto;
+    color: #e2e8f0;
+    margin: 0;
+  }
+  .principle-tag {
+    display: inline-block;
+    padding: 4px 8px;
+    margin: 3px 2px;
+    background: #1e1b4b;
+    border: 1px solid #4338ca;
+    color: #c7d2fe;
+    font-size: 11px;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<h1>
+  Local Crib Monitor
+  <span class="badge">Architecture & Flow</span>
+</h1>
+
+<div style="margin-bottom: 16px;">
+  <span class="principle-tag">로컬 전용 (Local Only)</span>
+  <span class="principle-tag">No Cloud API</span>
+  <span class="principle-tag">Text-Only Alert (No Photo on Push)</span>
+  <span class="principle-tag">Not a Medical Device</span>
+</div>
+
+<div class="grid">
+  <!-- 1. Pipeline Flow -->
+  <div class="card">
+    <h2>1. 실행 파이프라인 (watch.py)</h2>
+    <div class="flow">
+      <div class="node">
+        <div class="node-title">
+          <span>RTSP Grab (ffmpeg)</span>
+          <span class="pill warn">15초 주기</span>
+        </div>
+        <div class="node-desc">LAN 내 Tapo 캠 stream1(TCP)에서 1프레임 캡처 (latest.jpg)</div>
+      </div>
+      <div class="arrow">▼</div>
+      
+      <div class="node">
+        <div class="node-title">
+          <span>Motion Gate (motion.py)</span>
+          <span class="pill success">GPU 보호</span>
+        </div>
+        <div class="node-desc">이전 프레임 대비 2% 이상 픽셀 변화 없으면 VLM 추론 생략 (skipped: true)</div>
+      </div>
+      <div class="arrow">▼</div>
+
+      <div class="node">
+        <div class="node-title">
+          <span>VLM 추론 (qwen_client.py)</span>
+          <span class="pill warn">Qwen3-VL-4B</span>
+        </div>
+        <div class="node-desc">로컬 llama-server(127.0.0.1:8080)에 1280px 축소본 전송 후 JSON 판정</div>
+      </div>
+      <div class="arrow">▼</div>
+
+      <div class="node">
+        <div class="node-title">
+          <span>규칙 검증 & 보정 (normalize)</span>
+          <span class="pill success">코드 레벨 가드</span>
+        </div>
+        <div class="node-desc">얼굴 노출 시 alert 취소, 프롬프트 문구 복사(환각) 차단</div>
+      </div>
+      <div class="arrow">▼</div>
+
+      <div class="node">
+        <div class="node-title">
+          <span>알림 발송 (ntfy_alert.py)</span>
+          <span class="pill danger">10분 쿨다운</span>
+        </div>
+        <div class="node-desc">동일 규칙 10분 쿨다운 체크 후 텍스트만 ntfy 푸시 (사진 절대 전송 안 함)</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Core Rules & Logic -->
+  <div class="card">
+    <h2>2. 감지 규칙 (prompt.txt)</h2>
+    <table>
+      <tr><th>규칙 코드</th><th>위험 상황</th><th>비고</th></tr>
+      <tr>
+        <td><code>face_cover</code></td>
+        <td>이불/베개/옷이 입·코 가림</td>
+        <td>몸 덮는 이불은 정상 판정</td>
+      </tr>
+      <tr>
+        <td><code>face_down</code></td>
+        <td>매트리스에 얼굴 파묻힘</td>
+        <td>질식 고위험</td>
+      </tr>
+      <tr>
+        <td><code>climbing</code></td>
+        <td>침대 난간 기어오름</td>
+        <td>낙상 위험</td>
+      </tr>
+      <tr>
+        <td><code>empty</code></td>
+        <td>아기 및 보호자 모두 부재</td>
+        <td>이탈 감지</td>
+      </tr>
+    </table>
+
+    <h2 style="margin-top: 20px;">3. 최근 판정 기록 (status.json)</h2>
+    <pre>{
+  "n": 1,
+  "ts": "00:46:57",
+  "action": "sent",
+  "should_alert": true,
+  "baby_present": true,
+  "face_visible": false,
+  "rule": "face_cover",
+  "reason": "아기의 얼굴은 담요에 가려져 있으며, 눈, 코, 입, 측면 등이 보이지 않습니다.",
+  "motion": true,
+  "skipped": false
+}</pre>
+  </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+  <h2>4. 핵심 설계 철학 (Ponytail Architecture)</h2>
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; font-size: 13px;">
+    <div>
+      <strong style="color: var(--accent);">경량 가드 (Motion Gate)</strong>
+      <div style="color: var(--muted); margin-top: 4px;">정지 상태에서는 무거운 Qwen VLM을 호출하지 않고 넘겨 GPU 발열과 전력 낭비를 방지해요.</div>
+    </div>
+    <div>
+      <strong style="color: var(--accent);">개인정보 보호 (Privacy First)</strong>
+      <div style="color: var(--muted); margin-top: 4px;">아기 사진은 로컬 PC 밖으로 나가지 않아요. ntfy 알림에는 텍스트 요약만 실려요.</div>
+    </div>
+    <div>
+      <strong style="color: var(--accent);">쿨다운 가드 (Notification Cooldown)</strong>
+      <div style="color: var(--muted); margin-top: 4px;">동일 위험 규칙은 10분간 중복 알림을 막아 부모에게 알림 폭탄이 가지 않게 제어해요.</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

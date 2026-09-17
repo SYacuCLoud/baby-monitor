@@ -1,0 +1,10 @@
+ntfy.env
+rtsp.env
+__pycache__/
+*.pyc
+*.jpg
+*.jpeg
+*.png
+*.mp4
+frames/
+.venv/
