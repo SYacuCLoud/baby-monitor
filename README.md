@@ -116,6 +116,9 @@ llama-server.exe -m Qwen3-VL-4B-Instruct-Q4_K_M.gguf --mmproj mmproj-F16.gguf -n
 
 4. `curl http://127.0.0.1:8080/health` → `{"status":"ok"}`
 
+   - `qwen_client.py`는 요청마다 `cache_prompt: false`와 JSON 스키마(`response_format`)를 보냅니다. 캐시를 켜면 같은 사진에서도 temperature 0 답이 바뀌었습니다(`face_visible` true → false). 스키마는 `rule`을 허용된 값으로만 제한합니다.
+   - 판정 1회는 약 1.5초입니다(사진 약 1,300토큰 읽기 0.9초 + JSON 55토큰 쓰기 0.7초). `-np 1`, `-fa on`은 빨라지지 않았고, `-ctk/-ctv q8_0`은 답을 바꿔서 쓰지 않습니다.
+
 5. 자체 검사:
 
 ```text

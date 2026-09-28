@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import io
 import json
 import re
-import urllib.request
 
 from PIL import Image
 
 QWEN_URL = "http://127.0.0.1:8080/v1/chat/completions"
+QWEN_HOST, QWEN_PORT, QWEN_PATH = "127.0.0.1", 8080, "/v1/chat/completions"
 PROMPT_PATH = __import__("pathlib").Path(__file__).resolve().parent / "prompt.txt"
 
 
@@ -107,6 +108,41 @@ def normalize(data: dict) -> dict:
     }
 
 
+# Grammar-constrained output: always one object, rule only from ALLOWED (or null).
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "should_alert": {"type": "boolean"},
+        "baby_present": {"type": "boolean"},
+        "face_visible": {"type": "boolean"},
+        "rule": {"enum": [None, *sorted(ALLOWED)]},
+        "reason": {"type": "string", "maxLength": 120},
+    },
+    "required": ["should_alert", "baby_present", "face_visible", "rule", "reason"],
+    "additionalProperties": False,
+}
+
+
+def _post(body: dict, timeout: int) -> dict:
+    # http.client: loopback only, never follows redirects.
+    # ponytail: one retry on a local reset (seen 2/30 against llama-server); the frame never leaves 127.0.0.1.
+    data = json.dumps(body).encode("utf-8")
+    for attempt in (1, 2):
+        conn = http.client.HTTPConnection(QWEN_HOST, QWEN_PORT, timeout=timeout)
+        try:
+            conn.request("POST", QWEN_PATH, data, {"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            raw = resp.read()
+            if resp.status != 200:
+                raise RuntimeError(f"qwen HTTP {resp.status}")
+            return json.loads(raw.decode("utf-8"))
+        except (ConnectionResetError, http.client.RemoteDisconnected):
+            if attempt == 2:
+                raise
+        finally:
+            conn.close()
+
+
 def ask(image: Image.Image, timeout: int = 180) -> dict:
     prompt = PROMPT_PATH.read_text(encoding="utf-8")
     body = {
@@ -124,14 +160,12 @@ def ask(image: Image.Image, timeout: int = 180) -> dict:
         ],
         "temperature": 0,
         "max_tokens": 256,
+        # Reusing a cached prompt changed temperature-0 answers on the same frame (face_visible true -> false).
+        # Each frame is a new image anyway, so the cache saved nothing here.
+        "cache_prompt": False,
+        "response_format": {"type": "json_schema", "json_schema": {"name": "crib", "schema": SCHEMA}},
     }
-    req = urllib.request.Request(
-        QWEN_URL,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        out = json.loads(resp.read().decode("utf-8"))
+    out = _post(body, timeout)
     content = out["choices"][0]["message"]["content"]
     return normalize(parse_json_obj(content))
 
@@ -170,4 +204,5 @@ if __name__ == "__main__":
     assert normalize({"should_alert": "false", "baby_present": "true", "rule": None})[
         "should_alert"
     ] is False
+    assert set(SCHEMA["properties"]["rule"]["enum"]) == ALLOWED | {None}
     print("ok parse")
