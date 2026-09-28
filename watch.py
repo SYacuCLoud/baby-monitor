@@ -14,7 +14,7 @@ from PIL import Image
 
 from motion import changed_fraction, should_wake, to_gray
 from ntfy_alert import notify, notify_alert
-from qwen_client import ask
+from judge import ask
 
 DIR = Path(__file__).resolve().parent
 RTSP_ENV = DIR / "rtsp.env"

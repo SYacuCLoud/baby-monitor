@@ -8,3 +8,4 @@ __pycache__/
 *.mp4
 frames/
 .venv/
+baby-monitor-private/

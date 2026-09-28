@@ -10,7 +10,7 @@
 
 1. `stream1` TCP 한 장, 또는 파일 (`--image`)
 2. numpy 픽셀 차이로 “움직임 있나”만 봄 (`motion.py`)
-3. 로컬 llama.cpp의 Qwen3-VL이 JSON 한 줄
+3. 로컬 모델이 JSON 한 줄. 기본은 Qwen. `CRIB_MODEL=jev`이면 루프백 Jev
 4. `should_alert`이면 ntfy 텍스트. 같은 규칙은 10분 쿨다운
 
 알림 제목은 항상 `아기`. 본문 예: `입코 가림. {보이는 것}. Tapo 확인`
@@ -77,6 +77,21 @@ Qwen3-VL-4B Instruct **Q4_K_M** + mmproj. 예:
 
 가중치·mmproj는 이 저장소에 포함하지 않습니다. 용량이 크니 직접 받아 `llama-server` `-m` / `--mmproj` 경로에 넣으세요.
 
+### Jev로 바꾸기
+
+기본값은 그대로 Qwen입니다. 되돌릴 때는 `CRIB_MODEL`을 지우면 됩니다.
+
+- `CRIB_MODEL=jev`
+- `CRIB_JEV_URL` 기본값 `http://127.0.0.1:8090/v1/systemone` (8080은 llama-server)
+- 서버: [imajev](https://github.com/mohit67890/imajev)를 `D:\Dev\imajev`에, 모델을 `D:\Dev\_Models\Qwen3.5-2B`·`imajev-2b`에 둡니다. 실행: `D:\Dev\imajev\.venv\Scripts\python.exe imajev_serve.py`
+- `imajev_serve.py`는 uvicorn을 SelectorEventLoop으로 띄웁니다. Windows 기본 Proactor에서는 응답 약 30%가 WinError 10054로 끊겼습니다.
+- 속도: 사진과 공통 프롬프트를 한 번만 계산하고(prefix 공유), 질문 6개 꼬리를 한 배치로 돌립니다. 판정 1회 3.4초 → 약 1초(HTTP 포함)입니다. 원본 경로와의 확률 차이는 0.02 이하이며 `imajev_serve.py --check`로 확인합니다.
+- venv에 `triton-windows<3.7`, `flash-linear-attention`을 설치했습니다. `--fast`(CUDA 그래프)는 이 PC에서 오히려 느려서 쓰지 않습니다.
+- 프레임은 최상위 `images`의 data URL로 보냅니다. 질문 6개는 noul입니다.
+- 응답 `usage.images`가 1장이 아니면 서버가 사진을 안 본 것이라 판정을 버립니다 (텍스트 전용 Jev 차단).
+
+`api.typesafe.ai`로는 보내지 않습니다. Jev는 문장을 쓰지 않아서 `reason`은 비고, 알림은 규칙 이름만 갑니다. 애매하면 알리지 않습니다 (`ALERT_AT=0.70`).
+
 테스트한 PC: Win11, RTX 3070 Laptop 8GB, CUDA UMD 13.3. 이 GPU에서 7B vLLM은 건너뜀.
 
 캠 조건: 고정 렌즈, 난간+매트리스가 한 프레임. 침대 난간에 달지 않음(선). PTZ는 사람이 볼 때만. 루프는 wide/fixed `stream1`만.
@@ -106,6 +121,8 @@ llama-server.exe -m Qwen3-VL-4B-Instruct-Q4_K_M.gguf --mmproj mmproj-F16.gguf -n
 ```text
 python motion.py
 python qwen_client.py
+python jev_protocol.py
+python judge.py
 python watch.py
 python ntfy_alert.py --ping
 ```
@@ -128,7 +145,10 @@ python watch.py --image photo.jpg --once
 | 파일 | 역할 |
 | --- | --- |
 | `prompt.txt` | VLM 규칙. 시스템 칸 비움. 사진+이 텍스트 한 메시지 |
-| `qwen_client.py` | `127.0.0.1:8080` OpenAI 호환 chat |
+| `qwen_client.py` | `127.0.0.1:8080` OpenAI 호환 chat. 기본 모델 |
+| `judge.py` | `CRIB_MODEL=qwen`(기본) 또는 `jev` |
+| `jev_protocol.py` | 로컬 `POST /v1/systemone`. 클라우드 거부 |
+| `imajev_serve.py` | imajev-2b 서버 8090. SelectorEventLoop, prefix 공유 + 배치 |
 | `motion.py` | absdiff. `PIXEL_DELTA=25`, `MIN_CHANGED=0.02` |
 | `ntfy_alert.py` | 텍스트만. 빈 메시지·바이너리 거부 |
 | `watch.py` | 파일 또는 `stream1` TCP 루프. 같은 규칙 10분 쿨다운 |
