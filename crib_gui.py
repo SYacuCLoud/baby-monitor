@@ -279,7 +279,7 @@ class App:
         ttk.Button(mid, text="종료", command=self.quit_app).pack(side="left")
         ttk.Button(mid, text="파일 테스트", command=self.test_file).pack(side="left", padx=6)
         ttk.Button(mid, text="붙여넣기", command=self.test_clipboard).pack(side="left")
-        root.bind("<Control-v>", lambda _e: self.test_clipboard())
+        self.root.bind("<Control-v>", lambda _e: self.test_clipboard())
 
         self.status = tk.Label(self.root, justify="left", anchor="w", padx=8)
         self.status.pack(fill="x")
