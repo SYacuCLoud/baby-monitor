@@ -12,9 +12,11 @@ import os
 import socket
 import subprocess
 import sys
+import threading
+import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 from PIL import Image, ImageTk
 
@@ -55,6 +57,25 @@ def format_tick(row: dict) -> str:
     rule = row.get("rule") or "-"
     alert = "알림" if row.get("should_alert") else "조용"
     return f"{row.get('ts', '')}  {alert}  {rule}  {row.get('action', '')}"
+
+
+def format_test(row: dict) -> str:
+    return (
+        f"테스트\n알림 {row.get('should_alert')}  규칙 {row.get('rule')}\n"
+        f"아기 {row.get('baby_present')}  얼굴 {row.get('face_visible')}\n"
+        f"{row.get('reason') or ''}"
+    )
+
+
+def image_from_clipboard(value) -> tuple[Image.Image | None, str | None]:
+    if isinstance(value, Image.Image):
+        return value.convert("RGB"), None
+    if isinstance(value, list):
+        for item in value:
+            path = Path(str(item))
+            if path.is_file():
+                return Image.open(path).convert("RGB"), None
+    return None, "클립보드에 사진이 없습니다."
 
 
 def format_status(row: dict | None) -> str:
@@ -225,6 +246,10 @@ class App:
         self._logs: list = []
         self._photo = None
         self._photo_mtime = 0.0
+        self._hold_preview = False
+        self._hold_at = 0.0
+        self._status_hold = False
+        self._testing = False
         self.tray: Tray | None = None
         root.title("아기 감시")
         root.protocol("WM_DELETE_WINDOW", self.to_tray)
@@ -252,6 +277,9 @@ class App:
         ttk.Checkbutton(mid, text="푸시", variable=self.send).pack(side="left")
         ttk.Button(mid, text="트레이로", command=self.to_tray).pack(side="left", padx=6)
         ttk.Button(mid, text="종료", command=self.quit_app).pack(side="left")
+        ttk.Button(mid, text="파일 테스트", command=self.test_file).pack(side="left", padx=6)
+        ttk.Button(mid, text="붙여넣기", command=self.test_clipboard).pack(side="left")
+        root.bind("<Control-v>", lambda _e: self.test_clipboard())
 
         self.status = tk.Label(self.root, justify="left", anchor="w", padx=8)
         self.status.pack(fill="x")
@@ -372,7 +400,11 @@ class App:
         kind = self.kind.get()
         up = port_open(PORTS[kind])
         self.server_label.configure(text=f"{kind} {PORTS[kind]} " + ("켜짐" if up else "꺼짐"))
-        self.status.configure(text=format_status(read_status()))
+        if self._status_hold and not (STATUS.is_file() and STATUS.stat().st_mtime > self._hold_at):
+            pass
+        else:
+            self._status_hold = False
+            self.status.configure(text=format_status(read_status()))
         self._preview()
         self._history()
         if self.tray is not None:
@@ -380,6 +412,9 @@ class App:
         self.root.after(1000, self.refresh)
 
     def _preview(self) -> None:
+        if self._hold_preview and not (FRAME.is_file() and FRAME.stat().st_mtime > self._hold_at):
+            return
+        self._hold_preview = False
         if not FRAME.is_file():
             self.image.configure(image="", text="사진 없음")
             return
@@ -394,6 +429,70 @@ class App:
         self._photo = ImageTk.PhotoImage(image)
         self._photo_mtime = mtime
         self.image.configure(image=self._photo, text="")
+
+    def _show(self, image: Image.Image) -> None:
+        w, h = image.size
+        scale = PREVIEW / max(w, h)
+        shown = image if scale >= 1 else image.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+        self._photo = ImageTk.PhotoImage(shown)
+        self.image.configure(image=self._photo, text="")
+        self._hold_preview = True
+        self._hold_at = time.time()
+        self._status_hold = True
+
+    def test_file(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.root, filetypes=[("images", "*.jpg *.jpeg *.png *.webp"), ("all", "*.*")]
+        )
+        if not path:
+            return
+        self._run_test(Image.open(path).convert("RGB"))
+
+    def test_clipboard(self) -> None:
+        from PIL import ImageGrab
+
+        image, err = image_from_clipboard(ImageGrab.grabclipboard())
+        if image is None:
+            self.note.set(err or "클립보드에 사진이 없습니다.")
+            return
+        self._run_test(image)
+
+    def _run_test(self, image: Image.Image) -> None:
+        if self._testing:
+            self.note.set("테스트가 아직 돌아가는 중입니다.")
+            return
+        if not port_open(PORTS[self.kind.get()]):
+            self.note.set("서버가 꺼져 있어서 테스트하지 않습니다.")
+            return
+        self._testing = True
+        self._show(image)
+        self.note.set("테스트 중입니다. 폰으로는 보내지 않습니다.")
+        kind = self.kind.get()
+
+        def work() -> None:
+            from judge import ask
+
+            prev = os.environ.get("CRIB_MODEL")
+            os.environ["CRIB_MODEL"] = kind
+            try:
+                result = ask(image)
+                text = format_test(result)
+            except Exception as exc:
+                text = f"테스트 실패\n{type(exc).__name__}: {exc}"
+            finally:
+                if prev is None:
+                    os.environ.pop("CRIB_MODEL", None)
+                else:
+                    os.environ["CRIB_MODEL"] = prev
+
+            def done() -> None:
+                self._testing = False
+                self.status.configure(text=text)
+                self.note.set("테스트입니다. 푸시하지 않았고, 감시 기록에도 넣지 않았습니다.")
+
+            self.root.after(0, done)
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _history(self) -> None:
         rows = [format_tick(row) for row in tail_ticks(LOG)]
@@ -420,6 +519,13 @@ def _check() -> None:
     assert not allowed_stop("jev", "python.exe watch.py --rtsp")
     assert not port_open(9)
     assert "--send" not in watch_argv(False) and "--send" in watch_argv(True)
+    blank, err = image_from_clipboard(None)
+    assert blank is None and err
+    img, err = image_from_clipboard(Image.new("RGB", (8, 8), (1, 2, 3)))
+    assert err is None and img is not None and img.size == (8, 8)
+    missing, err = image_from_clipboard([r"C:\_AX\baby-monitor\no-such-photo.jpg"])
+    assert missing is None
+    assert "알림 False" in format_test({"should_alert": False, "rule": None, "baby_present": False, "face_visible": True, "reason": "x"})
     print("ok crib-gui")
 
 
