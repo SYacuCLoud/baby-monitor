@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -25,14 +26,19 @@ LOG = DIR / "frames" / "ticks.jsonl"
 _TICK_N = 0
 # ponytail: 15s until GPU heat says otherwise.
 INTERVAL_SEC = 15
-# ponytail: re-ask even if still; 2 min until GPU heat says otherwise.
-FORCE_SEC = 120
+# Re-ask even if the picture is still. Was 120s; a blanket creeping up is slow and gated out.
+FORCE_SEC = 60
 COOLDOWN_SEC = 600
 GRAB_TIMEOUT_SEC = 25
 ERROR_ALERT_AFTER = 3
+# Keep telling the phone while the watcher stays broken (once is easy to miss).
+ERROR_REALERT_SEC = 1800
+# "Still watching" push so a dead PC / sleep / network loss is noticed. 0 disables.
+HEARTBEAT_SEC = int(os.environ.get("WATCH_HEARTBEAT_SEC", "21600"))
 WATCH_HINT = {
     "grab failed": "캠 화면을 못 받음. 전원, 와이파이, Tapo 앱을 확인하세요",
 }
+MODEL_HINT = "판정 모델 오류. llama-server나 Jev 서버, PC를 확인하세요"
 
 
 def watch_hint(reason: str) -> str:
@@ -104,6 +110,64 @@ def grab_rtsp(url: str, dest: Path) -> None:
         raise GrabError("ffmpeg grab empty")
 
 
+class ErrorTracker:
+    """Phone push when a failure repeats: at N in a row, again every REALERT_SEC, and once on recovery."""
+
+    def __init__(self, label: str, hint: str, after: int = ERROR_ALERT_AFTER,
+                 realert_sec: int = ERROR_REALERT_SEC) -> None:
+        self.label, self.hint, self.after, self.realert_sec = label, hint, after, realert_sec
+        self.fails = 0
+        self.last_push = 0.0
+        self.pushed = False
+
+    def _push(self, text: str, send: bool, title: str = "감시") -> bool:
+        if not send:
+            return False
+        try:
+            notify(text, title=title)
+            return True
+        except Exception as e:
+            print(f"[{self.label}] push failed: {type(e).__name__}", file=sys.stderr, flush=True)
+            return False
+
+    def fail(self, send: bool, now: float | None = None, hint: str | None = None) -> None:
+        now = time.time() if now is None else now
+        self.fails += 1
+        due = self.fails >= self.after and (
+            not self.pushed or (now - self.last_push) >= self.realert_sec
+        )
+        if due and self._push(hint or self.hint, send):
+            self.pushed = True
+            self.last_push = now
+
+    def ok(self, send: bool) -> None:
+        if self.pushed:
+            self._push("감시 복구됨 (" + self.label + ")", send)
+        self.fails = 0
+        self.pushed = False
+
+
+class Heartbeat:
+    def __init__(self, seconds: int = HEARTBEAT_SEC) -> None:
+        self.seconds = seconds
+        self.last = time.time()
+
+    def due(self, now: float | None = None) -> bool:
+        now = time.time() if now is None else now
+        return self.seconds > 0 and (now - self.last) >= self.seconds
+
+    def beat(self, send: bool, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        if not self.due(now):
+            return
+        self.last = now
+        if send:
+            try:
+                notify("감시 중. 이 알림이 끊기면 PC와 캠을 확인하세요", title="감시", priority=3)
+            except Exception as e:
+                print(f"[heartbeat] push failed: {type(e).__name__}", file=sys.stderr, flush=True)
+
+
 class Cooldown:
     def __init__(self, seconds: int = COOLDOWN_SEC) -> None:
         self.seconds = seconds
@@ -119,11 +183,17 @@ class Cooldown:
         self.last_at[rule] = time.time() if now is None else now
 
 
-def decide(image: Image.Image, prev_gray=None, force: bool = False) -> tuple[dict, object]:
+def decide(
+    image: Image.Image, prev_gray=None, force: bool = False, base_gray=None
+) -> tuple[dict, object]:
     gray = to_gray(image)
     motion = True
     if prev_gray is not None:
+        # Compare with the last frame AND the last judged frame. Frame-to-frame alone never
+        # sees a slow change (blanket creeping up) because each step is under the threshold.
         motion = should_wake(changed_fraction(prev_gray, gray))
+        if not motion and base_gray is not None:
+            motion = should_wake(changed_fraction(base_gray, gray))
     if prev_gray is not None and not motion and not force:
         return {
             "should_alert": False,
@@ -191,9 +261,11 @@ def run_one(
     send: bool,
     prev_gray=None,
     force: bool = False,
+    base_gray=None,
+    model_errors: "ErrorTracker | None" = None,
 ):
     try:
-        result, gray = decide(image, prev_gray, force=force)
+        result, gray = decide(image, prev_gray, force=force, base_gray=base_gray)
     except Exception as e:
         result = {
             "should_alert": False,
@@ -208,10 +280,15 @@ def run_one(
         gray = prev_gray
     action = maybe_alert(result, cool, send)
     _print_tick(result, action)
+    if model_errors is not None:
+        if result.get("error"):
+            model_errors.fail(send)
+        elif not result.get("skipped"):
+            model_errors.ok(send)
     return gray, not result.get("skipped") and not result.get("error")
 
 
-def _error_tick(reason: str, cool: Cooldown, send: bool, fails: int) -> None:
+def _error_tick(reason: str) -> None:
     result = {
         "should_alert": False,
         "baby_present": None,
@@ -223,33 +300,44 @@ def _error_tick(reason: str, cool: Cooldown, send: bool, fails: int) -> None:
         "error": True,
     }
     _print_tick(result, "error")
-    if send and fails == ERROR_ALERT_AFTER:
-        try:
-            notify(watch_hint(reason), title="감시")
-        except Exception:
-            pass
 
 
 def run_rtsp(once: bool, send: bool, ticks: int = 0) -> None:
     url = load_rtsp_url()
     cool = Cooldown()
+    grab_errors = ErrorTracker("캠", "")
+    model_errors = ErrorTracker("모델", MODEL_HINT)
+    beat = Heartbeat()
     prev = None
+    base = None
     n = 0
-    fails = 0
     last_infer = 0.0
     while True:
         try:
             grab_rtsp(url, FRAME)
-            fails = 0
             with Image.open(FRAME) as img:
                 img = img.convert("RGB")
-                force = (time.time() - last_infer) >= FORCE_SEC
-                prev, did_infer = run_one(img, cool, send, prev, force=force)
-                if did_infer:
-                    last_infer = time.time()
-        except GrabError:
-            fails += 1
-            _error_tick("grab failed", cool, send, fails)
+            grab_errors.ok(send)
+            force = (time.time() - last_infer) >= FORCE_SEC
+            prev, did_infer = run_one(
+                img, cool, send, prev, force=force, base_gray=base, model_errors=model_errors
+            )
+            if did_infer:
+                last_infer = time.time()
+                base = prev
+        except Exception as e:
+            # GrabError, truncated JPEG (OSError), anything else: report it, keep watching.
+            reason = "grab failed" if isinstance(e, GrabError) else type(e).__name__
+            _error_tick(reason)
+            grab_errors.fail(send, hint=watch_hint(reason))
+        # Only say "still watching" when it is true: camera and model both OK and a recent verdict.
+        healthy = (
+            grab_errors.fails == 0
+            and model_errors.fails == 0
+            and (time.time() - last_infer) < FORCE_SEC * 3
+        )
+        if healthy:
+            beat.beat(send)
         n += 1
         if once or (ticks and n >= ticks):
             return
@@ -287,5 +375,60 @@ if __name__ == "__main__":
     assert not c.allow("empty", now=8)
     assert c.allow("face_cover", now=20)
     print("ok cooldown")
+
+    # --- failure reporting ---
+    sent = []
+    notify = lambda m, title="감시", priority=5: sent.append((m, priority))
+    t = ErrorTracker("모델", "model down", after=3, realert_sec=100)
+    t.fail(True, now=0); t.fail(True, now=1)
+    assert not sent
+    t.fail(True, now=2)
+    assert sent == [("model down", 5)]
+    t.fail(True, now=50)
+    assert len(sent) == 1  # no spam inside the re-alert window
+    t.fail(True, now=150)
+    assert len(sent) == 2  # re-alert while still broken
+    t.ok(True)
+    assert sent[-1][0].startswith("감시 복구됨") and t.fails == 0
+    t.ok(True)
+    n_before = len(sent)
+    t.ok(True)
+    assert len(sent) == n_before
+    hb = Heartbeat(seconds=100)
+    hb.last = 0
+    assert not hb.due(now=50) and hb.due(now=100)
+    hb.beat(True, now=100)
+    assert sent[-1][1] == 3 and not hb.due(now=150)
+    assert not Heartbeat(seconds=0).due(now=10**9)
+
+    # --- slow change is caught by the baseline compare ---
+    from PIL import Image as _I
+    base_img = _I.new("RGB", (64, 48), (20, 20, 20))
+    g0 = to_gray(base_img)
+    step1 = base_img.copy(); step1.paste((200, 200, 200), (0, 0, 4, 8))     # ~1% of frame
+    step2 = step1.copy();    step2.paste((200, 200, 200), (4, 0, 8, 8))
+    step3 = step2.copy();    step3.paste((200, 200, 200), (8, 0, 12, 8))   # ~3% total vs base
+    calls = []
+    ask = lambda im: calls.append(1) or {"should_alert": False}
+    r, g1 = decide(step1, g0)
+    assert r["skipped"]
+    r, g2 = decide(step2, g1)
+    assert r["skipped"]
+    r, g3 = decide(step3, g2)
+    assert r["skipped"], "frame-to-frame only misses the drift"
+    r, _ = decide(step3, g2, base_gray=g0)
+    assert not r["skipped"] and calls, "baseline compare must catch the slow drift"
+
+    # --- loop survives a corrupt frame and a model exception ---
+    class _Boom(Exception):
+        pass
+    def _bad_ask(im):
+        raise _Boom()
+    ask = _bad_ask
+    mt = ErrorTracker("모델", "model down", after=1)
+    sent.clear()
+    run_one(base_img, Cooldown(), True, None, model_errors=mt)
+    assert sent and sent[0][0] == "model down"
+    print("ok failures")
     if len(sys.argv) > 1:
         main()

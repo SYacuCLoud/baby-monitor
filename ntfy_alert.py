@@ -68,7 +68,7 @@ def notify_alert(rule: str | None, reason: str = "") -> None:
     notify(body, title=title)
 
 
-def notify(message: str, title: str = TITLE) -> None:
+def notify(message: str, title: str = TITLE, priority: int = 5) -> None:
     text = (message or "").strip()
     if not text:
         raise ValueError("empty message")
@@ -76,7 +76,7 @@ def notify(message: str, title: str = TITLE) -> None:
         raise ValueError("binary payload blocked")
     topic = ensure_topic()
     payload = json.dumps(
-        {"topic": topic, "title": title, "message": text, "priority": 5},
+        {"topic": topic, "title": title, "message": text, "priority": priority},
         ensure_ascii=False,
     ).encode("utf-8")
     req = urllib.request.Request(
@@ -102,7 +102,7 @@ if __name__ == "__main__":
     title, body = format_alert("face_cover", "이불이 코 쪽에 있다")
     assert title == "아기" and body.startswith("입코 가림")
     print("ok topic_file", ENV_PATH)
-    print("subscribe in ntfy app:", t)
+    print("subscribe in ntfy app:", t[:6] + "..." + " (full topic is in ntfy.env)")
     if "--ping" in sys.argv:
         notify("테스트. Tapo 확인", title=TITLE)
         print("ping sent")

@@ -173,7 +173,7 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
         conn.request("POST", parsed.path, json.dumps(payload).encode("utf-8"), headers)
         resp = conn.getresponse()
         if resp.status != 200:
-            raise SystemExit(f"jev HTTP {resp.status} refused; frame not resent")
+            raise RuntimeError(f"jev HTTP {resp.status} refused; frame not resent")
         return _read_json(resp)
     finally:
         conn.close()
@@ -219,8 +219,13 @@ def _self_check() -> None:
     clash = {key: {"noul": 0.05} for key in _FIELDS}
     clash["face_cover"] = {"noul": 0.95}
     clash["baby_present"] = {"noul": 0.10}
-    dropped = verdict_from_answers(clash)
-    assert dropped["should_alert"] is False and dropped["rule"] is None
+    covered = verdict_from_answers(clash)
+    # A baby fully under a blanket may look "absent". Keep the alert.
+    assert covered["should_alert"] is True and covered["rule"] == "face_cover"
+    assert "아기가 안 보임" in covered["reason"]
+    clash["face_cover"] = {"noul": 0.05}
+    clash["climbing"] = {"noul": 0.95}
+    assert verdict_from_answers(clash)["should_alert"] is False  # climbing needs a visible baby
     try:
         _noul({"face_cover": {"noul": True}}, "face_cover")
         raise SystemExit("bool noul must fail")
@@ -330,9 +335,9 @@ def _self_check() -> None:
         try:
             ask(img, timeout=5)
             raise SystemExit("redirect followed")
-        except SystemExit as e:
-            if "redirect followed" in str(e):
-                raise
+        except RuntimeError as e:
+            # HTTP errors must be a plain Exception so the watch loop survives them.
+            assert "refused" in str(e) and not isinstance(e, SystemExit)
         assert posted["n"] == 1
     finally:
         if prev is None:

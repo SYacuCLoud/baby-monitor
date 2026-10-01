@@ -10,7 +10,7 @@
 
 1. `stream1` TCP 한 장, 또는 파일 (`--image`)
 2. numpy 픽셀 차이로 “움직임 있나”만 봄 (`motion.py`)
-3. 로컬 모델이 JSON 한 줄. 기본은 Qwen. `CRIB_MODEL=jev`이면 루프백 Jev
+3. 로컬 모델이 JSON 한 줄. 기본은 imajev-2b. `CRIB_MODEL=qwen`이면 llama-server Qwen
 4. `should_alert`이면 ntfy 텍스트. 같은 규칙은 10분 쿨다운
 
 알림 제목은 항상 `아기`. 본문 예: `입코 가림. {보이는 것}. Tapo 확인`
@@ -39,6 +39,12 @@
 | `empty` | 아기 없고 어른도 없음 |
 
 그 외(수면, 이불이 몸만 덮음, 장난감)는 알림 없음. 모르면 `should_alert`는 false.
+
+아기가 안 보여도 `face_cover`와 `face_down`은 알림을 유지합니다. 이불에 완전히 덮인 경우가 있기 때문입니다. 본문에 "아기가 안 보임"이 붙습니다. `climbing`은 아기가 보여야 알립니다.
+
+움직임은 직전 프레임과, 마지막으로 판정한 프레임을 둘 다 봅니다. 이불이 천천히 올라오는 변화를 놓치지 않기 위해서입니다. 변화가 없어도 60초마다 한 번은 판정합니다.
+
+감시가 멈추는 것도 알립니다. 캡처나 모델이 연속 3번 실패하면 푸시하고, 계속 실패하면 30분마다 다시 보냅니다. 복구되면 복구 알림을 보냅니다. 카메라와 모델이 정상이면 6시간마다 "감시 중"을 보냅니다. `WATCH_HEARTBEAT_SEC=0`이면 그 알림만 끕니다.
 
 출력:
 
@@ -77,11 +83,11 @@ Qwen3-VL-4B Instruct **Q4_K_M** + mmproj. 예:
 
 가중치·mmproj는 이 저장소에 포함하지 않습니다. 용량이 크니 직접 받아 `llama-server` `-m` / `--mmproj` 경로에 넣으세요.
 
-### Jev로 바꾸기
+### Jev가 기본
 
-기본값은 그대로 Qwen입니다. 되돌릴 때는 `CRIB_MODEL`을 지우면 됩니다.
+기본은 imajev-2b입니다. Qwen으로 되돌릴 때는 `CRIB_MODEL=qwen`입니다. 환경 변수를 지우면 다시 Jev입니다.
 
-- `CRIB_MODEL=jev`
+- `CRIB_MODEL` 미설정 또는 `jev`
 - `CRIB_JEV_URL` 기본값 `http://127.0.0.1:8090/v1/systemone` (8080은 llama-server)
 - 서버: [imajev](https://github.com/mohit67890/imajev)를 `D:\Dev\imajev`에, 모델을 `D:\Dev\_Models\Qwen3.5-2B`·`imajev-2b`에 둡니다. 실행: `D:\Dev\imajev\.venv\Scripts\python.exe imajev_serve.py`
 - `imajev_serve.py`는 uvicorn을 SelectorEventLoop으로 띄웁니다. Windows 기본 Proactor에서는 응답 약 30%가 WinError 10054로 끊겼습니다.
@@ -128,6 +134,7 @@ python jev_protocol.py
 python judge.py
 python watch.py
 python ntfy_alert.py --ping
+python crib_gui.py --check
 ```
 
 6. 캠 한 장 / 루프 (푸시 없음이 기본. `--send`여야 폰):
@@ -143,18 +150,21 @@ python watch.py --image photo.jpg --once
 
 `--send` 없이 돌리면 폰에 안 갑니다.
 
+7. 창: `python crib_gui.py`. 푸시는 기본으로 꺼져 있습니다. 창을 닫으면 트레이로 갑니다. 종료는 이 창이 켠 감시만 끄고 서버는 남깁니다.
+
 ## 파일
 
 | 파일 | 역할 |
 | --- | --- |
 | `prompt.txt` | VLM 규칙. 시스템 칸 비움. 사진+이 텍스트 한 메시지 |
-| `qwen_client.py` | `127.0.0.1:8080` OpenAI 호환 chat. 기본 모델 |
-| `judge.py` | `CRIB_MODEL=qwen`(기본) 또는 `jev` |
+| `qwen_client.py` | `127.0.0.1:8080` OpenAI 호환 chat. `CRIB_MODEL=qwen`일 때 |
+| `judge.py` | `CRIB_MODEL` 미설정이면 `jev`. `qwen`으로 되돌릴 수 있음 |
 | `jev_protocol.py` | 로컬 `POST /v1/systemone`. 클라우드 거부 |
 | `imajev_serve.py` | imajev-2b 서버 8090. SelectorEventLoop, prefix 공유 + 배치 |
 | `motion.py` | absdiff. `PIXEL_DELTA=25`, `MIN_CHANGED=0.02` |
 | `ntfy_alert.py` | 텍스트만. 빈 메시지·바이너리 거부 |
 | `watch.py` | 파일 또는 `stream1` TCP 루프. 같은 규칙 10분 쿨다운 |
+| `crib_gui.py` | 창. 감시/서버 시작, 최근 사진, 기록, 트레이 |
 | `ntfy.env` | 로컬 토픽. git에 넣지 않음 |
 | `rtsp.env` | LAN `stream1`만. git에 넣지 않음 |
 | `requirements.txt` | Python 의존성 |

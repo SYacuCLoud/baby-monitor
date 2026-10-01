@@ -35,7 +35,10 @@ def _jpeg_b64(image: Image.Image) -> str:
 
 
 ALLOWED = frozenset({"face_cover", "face_down", "climbing", "empty"})
-NEED_PERSON = frozenset({"face_cover", "face_down", "climbing"})
+# Only climbing needs a visible baby. A baby fully under a blanket may be reported as
+# "not present", and face_cover / face_down must still alert then.
+NEED_PERSON = frozenset({"climbing"})
+NOT_VISIBLE_NOTE = "아기가 안 보임"
 COPY_RE = re.compile(
     r"(입이나 코|얼굴을 가리|매트리스에 파묻|난간을 타고|기어오름|이불/베개)"
 )
@@ -87,7 +90,9 @@ def normalize(data: dict) -> dict:
             rule = None
             alert = False
     reason = str(data.get("reason") or "").strip()
-    if COPY_RE.search(reason):
+    # Prompt-echo filter only for quiet verdicts. On an alert the reason is the message body,
+    # and a real face_cover sentence legitimately says "얼굴을 가리...".
+    if not alert and COPY_RE.search(reason):
         reason = ""
     if not alert:
         rule = None
@@ -99,6 +104,8 @@ def normalize(data: dict) -> dict:
     if alert and rule == "empty" and present:
         alert = False
         rule = None
+    if alert and rule in ("face_cover", "face_down") and not present:
+        reason = f"{NOT_VISIBLE_NOTE}. {reason}" if reason else NOT_VISIBLE_NOTE
     return {
         "should_alert": alert,
         "baby_present": present,
@@ -199,6 +206,23 @@ if __name__ == "__main__":
         }
     )
     assert hit["should_alert"] is False and hit["rule"] is None
+    covered = normalize(
+        {
+            "should_alert": True,
+            "baby_present": False,
+            "face_visible": False,
+            "rule": "face_cover",
+            "reason": "이불이 얼굴을 가리고 있다",
+        }
+    )
+    assert covered["should_alert"] is True and covered["rule"] == "face_cover"
+    assert covered["reason"] == "아기가 안 보임. 이불이 얼굴을 가리고 있다"
+    assert normalize({"should_alert": True, "baby_present": False, "rule": "face_cover"})[
+        "reason"
+    ] == "아기가 안 보임"
+    assert normalize({"should_alert": True, "baby_present": False, "rule": "climbing"})[
+        "should_alert"
+    ] is False
     assert as_bool("false") is False
     assert as_bool("true") is True
     assert normalize({"should_alert": "false", "baby_present": "true", "rule": None})[

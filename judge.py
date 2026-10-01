@@ -1,12 +1,16 @@
-"""Crib model switch. CRIB_MODEL=qwen (default) or jev. Not a medical device."""
+"""Crib model switch. CRIB_MODEL=jev (default) or qwen. Not a medical device."""
 
 from __future__ import annotations
 
 import os
 
 
+def model_kind() -> str:
+    return os.environ.get("CRIB_MODEL", "jev").strip().lower() or "jev"
+
+
 def ask(image, timeout: int = 180) -> dict:
-    kind = os.environ.get("CRIB_MODEL", "qwen").strip().lower() or "qwen"
+    kind = model_kind()
     if kind == "qwen":
         from qwen_client import ask as impl
 
@@ -19,6 +23,10 @@ def ask(image, timeout: int = 180) -> dict:
 
 
 if __name__ == "__main__":
+    prev = os.environ.pop("CRIB_MODEL", None)
+    assert model_kind() == "jev"
+    if prev is not None:
+        os.environ["CRIB_MODEL"] = prev
     os.environ["CRIB_MODEL"] = "cloud"
     try:
         ask(None)
