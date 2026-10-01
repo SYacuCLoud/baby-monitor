@@ -251,10 +251,27 @@ def _self_check() -> None:
         handler.end_headers()
         handler.wfile.write(body)
 
-    class Ok(BaseHTTPRequestHandler):
+    class Quiet(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             return
 
+        def finish(self):
+            # Drain before the file objects close. shutdown_request's SHUT_WR is too late on Windows
+            # and still reset about 1/40 replies.
+            import socket
+
+            try:
+                if not self.wfile.closed:
+                    self.wfile.flush()
+                self.connection.shutdown(socket.SHUT_WR)
+                self.connection.settimeout(2)
+                while self.connection.recv(4096):
+                    pass
+            except OSError:
+                pass
+            super().finish()
+
+    class Ok(Quiet):
         def do_POST(self):
             n = int(self.headers.get("Content-Length", "0"))
             req = json.loads(self.rfile.read(n))
@@ -271,18 +288,12 @@ def _self_check() -> None:
             self.end_headers()
             self.wfile.write(body)
 
-    class Blind(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):
-            return
-
+    class Blind(Quiet):
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
             reply(self, {"answers": cover, "usage": {"images": []}})
 
-    class Bounce(BaseHTTPRequestHandler):
-        def log_message(self, fmt, *args):
-            return
-
+    class Bounce(Quiet):
         def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
             self.send_response(307)
@@ -290,8 +301,13 @@ def _self_check() -> None:
             self.send_header("Content-Length", "0")
             self.end_headers()
 
+    class CloseOnly(ThreadingHTTPServer):
+        # Quiet.finish already half-closed and drained. SHUT_WR in shutdown_request still reset replies.
+        def shutdown_request(self, request):
+            self.close_request(request)
+
     def serve(handler):
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        httpd = CloseOnly(("127.0.0.1", 0), handler)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         return httpd
 
