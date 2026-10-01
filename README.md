@@ -96,7 +96,7 @@ Qwen3-VL-4B Instruct **Q4_K_M** + mmproj. 예:
 - 프레임은 최상위 `images`의 data URL로 보냅니다. 질문 6개는 noul입니다.
 - 응답 `usage.images`가 1장이 아니면 서버가 사진을 안 본 것이라 판정을 버립니다 (텍스트 전용 Jev 차단).
 
-`api.typesafe.ai`로는 보내지 않습니다. Jev는 문장을 쓰지 않아서 `reason`은 비고, 알림은 규칙 이름만 갑니다. 애매하면 알리지 않습니다 (`ALERT_AT=0.70`).
+`api.typesafe.ai`로는 보내지 않습니다. Jev는 문장을 쓰지 않아서 `reason`은 비고, 알림은 규칙 이름만 갑니다. 애매하면 알리지 않습니다 (`ALERT_AT=0.60`).
 
 테스트한 PC: Win11, RTX 3070 Laptop 8GB, CUDA UMD 13.3. 이 GPU에서 7B vLLM은 건너뜀.
 

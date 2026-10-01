@@ -21,6 +21,7 @@ from tkinter import filedialog, ttk
 from PIL import Image, ImageTk
 
 from judge import model_kind
+from jev_protocol import ALERT_AT
 
 DIR = Path(__file__).resolve().parent
 FRAME = DIR / "frames" / "latest.jpg"
@@ -28,7 +29,7 @@ STATUS = DIR / "frames" / "status.json"
 LOG = DIR / "frames" / "ticks.jsonl"
 PORTS = {"jev": 8090, "qwen": 8080}
 HISTORY = 50
-PREVIEW = 420
+PREVIEW = 720
 
 IMAJEV_PY = Path(os.environ.get("IMAJEV_PY", r"D:\Dev\imajev\.venv\Scripts\python.exe"))
 LLAMA = Path(os.environ.get("LLAMA_SERVER", r"D:\Dev\llama.cpp\llama-server.exe"))
@@ -59,12 +60,51 @@ def format_tick(row: dict) -> str:
     return f"{row.get('ts', '')}  {alert}  {rule}  {row.get('action', '')}"
 
 
+RULE_KO = {
+    "face_cover": "입코 가림",
+    "face_down": "엎드림",
+    "climbing": "난간",
+    "empty": "아무도 없음",
+}
+
+
+def verdict_text(row: dict | None) -> tuple[str, str]:
+    """Big line, then the one sentence under it. Korean, not True/False."""
+    if not row:
+        return "판정 없음", ""
+    if row.get("error"):
+        return "판정 실패", str(row.get("reason") or "")
+    if row.get("skipped"):
+        return "움직임 없음", "모델을 부르지 않았습니다."
+    rule = RULE_KO.get(row.get("rule") or "", "")
+    head = f"알림: {rule}" if row.get("should_alert") else "알림 없음"
+    bits = []
+    if row.get("baby_present") is True:
+        bits.append("아기 있음")
+    elif row.get("baby_present") is False:
+        bits.append("아기 없음")
+    if row.get("face_visible") is True:
+        bits.append("얼굴 보임")
+    elif row.get("face_visible") is False:
+        bits.append("얼굴 안 보임")
+    reason = str(row.get("reason") or "").strip()
+    if reason:
+        bits.append(reason)
+    scores = row.get("scores") if isinstance(row.get("scores"), dict) else None
+    nums = []
+    if scores:
+        order = ("face_cover", "face_down", "climbing", "baby_present", "adult_present", "face_visible")
+        names = {"baby_present": "아기", "adult_present": "어른", "face_visible": "얼굴", **RULE_KO}
+        nums = [f"{names.get(key, key)} {float(scores[key]):.2f}" for key in order if key in scores]
+    detail = ". ".join(bits)
+    if nums:
+        detail = (detail + "\n" if detail else "") + "\n".join(nums) + f"\n알림 기준 {ALERT_AT:.2f}"
+    return head, detail
+
+
 def format_test(row: dict) -> str:
-    return (
-        f"테스트\n알림 {row.get('should_alert')}  규칙 {row.get('rule')}\n"
-        f"아기 {row.get('baby_present')}  얼굴 {row.get('face_visible')}\n"
-        f"{row.get('reason') or ''}"
-    )
+    head, detail = verdict_text(row)
+    return head if not detail else f"{head}\n{detail}"
 
 
 def image_from_clipboard(value) -> tuple[Image.Image | None, str | None]:
@@ -281,13 +321,15 @@ class App:
         ttk.Button(mid, text="붙여넣기", command=self.test_clipboard).pack(side="left")
         self.root.bind("<Control-v>", lambda _e: self.test_clipboard())
 
-        self.status = tk.Label(self.root, justify="left", anchor="w", padx=8)
-        self.status.pack(fill="x")
+        self.headline = tk.Label(self.root, text="판정 없음", justify="left", anchor="w", padx=12, font=("Segoe UI", 28, "bold"))
+        self.headline.pack(fill="x")
+        self.detail = tk.Label(self.root, text="", justify="left", anchor="w", padx=12, font=("Segoe UI", 16), wraplength=860)
+        self.detail.pack(fill="x")
         self.image = tk.Label(self.root, anchor="w", padx=8)
         self.image.pack(fill="x")
         ttk.Label(self.root, textvariable=self.note, anchor="w", padding=(8, 2)).pack(fill="x")
         ttk.Label(self.root, text="기록 (글자만, 최근 50)", anchor="w", padding=(8, 2)).pack(fill="x")
-        self.history = tk.Listbox(self.root, height=12, activestyle="none")
+        self.history = tk.Listbox(self.root, height=5, activestyle="none")
         self.history.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         ttk.Label(
             self.root,
@@ -404,7 +446,7 @@ class App:
             pass
         else:
             self._status_hold = False
-            self.status.configure(text=format_status(read_status()))
+            self._apply_verdict(read_status())
         self._preview()
         self._history()
         if self.tray is not None:
@@ -422,19 +464,21 @@ class App:
         if mtime == self._photo_mtime:
             return
         image = Image.open(FRAME).convert("RGB")
-        w, h = image.size
-        scale = PREVIEW / max(w, h)
-        if scale < 1:
-            image = image.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
-        self._photo = ImageTk.PhotoImage(image)
+        self._photo = ImageTk.PhotoImage(self._fit(image))
         self._photo_mtime = mtime
         self.image.configure(image=self._photo, text="")
 
-    def _show(self, image: Image.Image) -> None:
+    def _fit(self, image: Image.Image) -> Image.Image:
         w, h = image.size
-        scale = PREVIEW / max(w, h)
-        shown = image if scale >= 1 else image.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
-        self._photo = ImageTk.PhotoImage(shown)
+        long_edge = max(w, h)
+        target = PREVIEW if long_edge > PREVIEW else max(long_edge, 560)
+        scale = target / long_edge
+        if abs(scale - 1) < 0.02:
+            return image
+        return image.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+
+    def _show(self, image: Image.Image) -> None:
+        self._photo = ImageTk.PhotoImage(self._fit(image))
         self.image.configure(image=self._photo, text="")
         self._hold_preview = True
         self._hold_at = time.time()
@@ -466,7 +510,9 @@ class App:
             return
         self._testing = True
         self._show(image)
-        self.note.set("테스트 중입니다. 폰으로는 보내지 않습니다.")
+        self._apply_verdict({"error": True, "reason": "판정 중"})
+        self.headline.configure(text="판정 중", fg="#333333")
+        self.note.set("폰으로는 보내지 않습니다.")
         kind = self.kind.get()
 
         def work() -> None:
@@ -476,9 +522,10 @@ class App:
             os.environ["CRIB_MODEL"] = kind
             try:
                 result = ask(image)
-                text = format_test(result)
+                fail = None
             except Exception as exc:
-                text = f"테스트 실패\n{type(exc).__name__}: {exc}"
+                result = None
+                fail = f"{type(exc).__name__}: {exc}"
             finally:
                 if prev is None:
                     os.environ.pop("CRIB_MODEL", None)
@@ -487,12 +534,25 @@ class App:
 
             def done() -> None:
                 self._testing = False
-                self.status.configure(text=text)
+                if fail:
+                    self.headline.configure(text="판정 실패", fg="#9b1c1c")
+                    self.detail.configure(text=fail)
+                else:
+                    self._apply_verdict(result, hold=True)
                 self.note.set("테스트입니다. 푸시하지 않았고, 감시 기록에도 넣지 않았습니다.")
 
             self.root.after(0, done)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _apply_verdict(self, row: dict | None, hold: bool = False) -> None:
+        head, detail = verdict_text(row)
+        alert = bool(row and row.get("should_alert"))
+        self.headline.configure(text=head, fg="#9b1c1c" if alert else "#14532d")
+        self.detail.configure(text=detail)
+        if hold:
+            self._status_hold = True
+            self._hold_at = time.time()
 
     def _history(self) -> None:
         rows = [format_tick(row) for row in tail_ticks(LOG)]
@@ -525,7 +585,9 @@ def _check() -> None:
     assert err is None and img is not None and img.size == (8, 8)
     missing, err = image_from_clipboard([r"C:\_AX\baby-monitor\no-such-photo.jpg"])
     assert missing is None
-    assert "알림 False" in format_test({"should_alert": False, "rule": None, "baby_present": False, "face_visible": True, "reason": "x"})
+    head, detail = verdict_text({"should_alert": False, "baby_present": True, "face_visible": False, "rule": None, "reason": "x"})
+    assert head == "알림 없음" and "아기 있음" in detail and "얼굴 안 보임" in detail
+    assert "입코 가림 0.76" in verdict_text({"should_alert": False, "scores": {"face_cover": 0.764}})[1]
     print("ok crib-gui")
 
 
@@ -534,6 +596,7 @@ def main() -> None:
         _check()
         return
     root = tk.Tk()
+    root.geometry("980x920")
     App(root)
     root.mainloop()
 

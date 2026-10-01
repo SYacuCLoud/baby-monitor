@@ -20,7 +20,7 @@ from qwen_client import _jpeg_b64, normalize
 
 DEFAULT_URL = "http://127.0.0.1:8090/v1/systemone"
 # Unsure band is [ABSENT_AT, ALERT_AT). Not a calibrated Jev threshold.
-ALERT_AT = 0.70
+ALERT_AT = 0.60
 ABSENT_AT = 0.30
 PRESENT_AT = 0.50
 _RULES = ("face_cover", "face_down", "climbing")
@@ -133,7 +133,7 @@ def verdict_from_answers(answers: dict) -> dict:
     ):
         rule = "empty"
         alert = True
-    return normalize(
+    got = normalize(
         {
             "should_alert": alert,
             "baby_present": scores["baby_present"] >= PRESENT_AT,
@@ -142,6 +142,8 @@ def verdict_from_answers(answers: dict) -> dict:
             "reason": "",
         }
     )
+    got["scores"] = scores
+    return got
 
 
 def assert_saw_image(body: dict) -> None:
