@@ -16,6 +16,7 @@ from PIL import Image
 from motion import changed_fraction, should_wake, to_gray
 from ntfy_alert import notify, notify_alert
 from judge import ask, model_kind
+import score_log
 from score_log import log_judgment
 
 DIR = Path(__file__).resolve().parent
@@ -233,6 +234,16 @@ def maybe_alert(result: dict, cool: Cooldown, send: bool) -> str:
     return "dry"
 
 
+def _append_tick(path: Path, line: str) -> None:
+    """Append one tick line. Rotates like score_log (5MB, keep 3); a failed rotate never stops the loop."""
+    try:
+        score_log._rotate(path, len((line + "\n").encode("utf-8")))
+    except Exception:
+        pass
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 def _print_tick(result: dict, action: str) -> None:
     global _TICK_N
     _TICK_N += 1
@@ -249,8 +260,7 @@ def _print_tick(result: dict, action: str) -> None:
     print(line, flush=True)
     FRAME.parent.mkdir(parents=True, exist_ok=True)
     STATUS.write_text(line + "\n", encoding="utf-8")
-    with LOG.open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    _append_tick(LOG, line)
     STATUS_HTML.write_text(
         "<!doctype html><meta charset=utf-8><title>crib watch</title>"
         "<pre style='font:16px/1.4 ui-monospace,monospace;padding:12px'>"
@@ -442,6 +452,31 @@ if __name__ == "__main__" and (len(sys.argv) == 1 or "--selftest" in sys.argv[1:
     run_one(base_img, Cooldown(), True, None, model_errors=mt)
     assert sent and sent[0][0] == "model down"
     print("ok failures")
+
+    # --- ticks.jsonl rotates instead of growing forever ---
+    import tempfile
+    _saved_max = score_log.MAX_BYTES
+    with tempfile.TemporaryDirectory() as _d:
+        _t = Path(_d) / "ticks.jsonl"
+        score_log.MAX_BYTES = 300
+        try:
+            for _i in range(40):
+                _append_tick(_t, json.dumps({"n": _i, "pad": "x" * 20}))
+            _names = sorted(q.name for q in Path(_d).iterdir())
+            assert _names == ["ticks.jsonl", "ticks.jsonl.1", "ticks.jsonl.2"], _names
+            assert all(q.stat().st_size <= 300 for q in Path(_d).iterdir())
+            assert json.loads(_t.read_text(encoding="utf-8").splitlines()[-1])["n"] == 39
+            # a rotate that fails must not stop the append
+            _orig = score_log._rotate
+            score_log._rotate = lambda *a, **k: (_ for _ in ()).throw(PermissionError("locked"))
+            try:
+                _append_tick(_t, json.dumps({"n": 99}))
+            finally:
+                score_log._rotate = _orig
+            assert json.loads(_t.read_text(encoding="utf-8").splitlines()[-1])["n"] == 99
+        finally:
+            score_log.MAX_BYTES = _saved_max
+    print("ok tick-rotate")
     if _prev_log is None:
         os.environ.pop("CRIB_SCORE_LOG", None)
     else:

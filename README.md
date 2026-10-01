@@ -365,7 +365,7 @@ python score_log.py --label <id> real prone   # 그 줄에 메모(라벨) 추가
 | --- | --- |
 | `frames/latest.jpg` | 마지막으로 캡처한 카메라 프레임 (매번 덮어씀) |
 | `frames/status.json`, `frames/status.html` | 마지막 판정 한 줄 |
-| `frames/ticks.jsonl` | 판정 기록 (계속 추가됨, 코드에 로테이션 없음) |
+| `frames/ticks.jsonl` | 판정 기록. 5MB를 넘으면 `.1`, `.2`로 넘기고 최대 3개만 유지 (`watch.py`, `score_log.py`와 같은 방식). 로테이션이 실패해도 감시는 멈추지 않음 |
 | `frames/gui-*.log` | GUI가 띄운 서버·감시의 출력 |
 | `logs/scores.jsonl` (+ `.1`, `.2`) | 점수 기록 |
 | `logs/frames/*.jpg` | 사진 저장 옵션을 켠 경우에만 생기는 판정 사진 (아기 사진) |
@@ -380,7 +380,7 @@ python score_log.py --label <id> real prone   # 그 줄에 메모(라벨) 추가
   - `--rtsp` 모드는 마지막 프레임을 `frames/latest.jpg`로 저장하고 매번 덮어씁니다 (GUI 미리보기가 이 파일을 읽음). 이 파일 하나 말고 과거 프레임은 기본으로 보관하지 않습니다.
   - GUI의 `파일 테스트`/`붙여넣기` 사진은 기본으로 저장하지 않습니다.
   - `CRIB_LOG_SAVE_FRAMES` 또는 `CRIB_LOG_SAVE_AMBIGUOUS`를 켜면 판정한 사진이 `logs/frames/`에 **쌓입니다** (기본 꺼짐, 최대 `CRIB_LOG_MAX_FRAMES`장, 기본 200). 아기 사진이 이 PC에 그대로 남으니 공유하거나 올리지 마세요. 사진은 ntfy로는 가지 않습니다.
-  - 글자 기록은 사진이 없어도 남습니다: `frames/ticks.jsonl`(`reason` 텍스트), `logs/scores.jsonl`(점수, `reason`, GUI 테스트에서 고른 파일 이름). 파일 이름에 개인 정보가 있을 수 있습니다. 둘 다 기본으로 켜져 있고, 크기 제한은 `logs/scores.jsonl`에만 있습니다 (`ticks.jsonl`은 계속 늘어남).
+  - 글자 기록은 사진이 없어도 남습니다: `frames/ticks.jsonl`(`reason` 텍스트), `logs/scores.jsonl`(점수, `reason`, GUI 테스트에서 고른 파일 이름). 파일 이름에 개인 정보가 있을 수 있습니다. 둘 다 기본으로 켜져 있고, 둘 다 5MB 넘으면 로테이션해 최대 3개 파일만 유지합니다. GUI의 "기록" 목록은 현재 `ticks.jsonl`만 읽으므로 로테이션 직후에는 줄 수가 적을 수 있습니다.
 - **RTSP 자격증명은 저장소에 없습니다.** `rtsp.env`는 `.gitignore`에 있고, 예시 파일만 커밋됩니다. 다만 ffmpeg를 실행할 때 자격증명이 들어간 URL을 명령줄 인자로 넘기므로, 같은 PC의 다른 사용자가 프로세스 목록에서 볼 수 있습니다.
 - 카메라 `stream1`(고정 화면)만 쓰도록 되어 있고 `stream6`(PTZ)은 코드가 거부합니다. RTSP, ffmpeg, 감시 루프, 모델 서버를 외부 인터넷에 열지 마세요.
 - 공개 저장소·이슈에 아기 사진(`logs/frames/` 포함), RTSP URL, `ntfy.env`, 토픽, 알림 기록, 점수 기록(`logs/scores.jsonl`)을 올리지 마세요. 자세한 내용은 [SECURITY.md](SECURITY.md).
