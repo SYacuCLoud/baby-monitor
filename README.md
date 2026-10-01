@@ -398,6 +398,7 @@ python score_log.py --label <id> real prone   # 그 줄에 메모(라벨) 추가
 - 캡처·이미지 읽기·모델 호출 중 일반 예외는 오류 틱으로 기록하고 루프를 계속 돌지만, 설정 오류(`CRIB_MODEL`이 잘못됨, `CRIB_JEV_URL`이 loopback이 아님, `CRIB_JEV_ALERT_AT_<RULE>`가 범위 밖)는 `SystemExit`라서 감시 프로세스가 종료됩니다.
 - 기본 경로(`D:\Dev\...`, `C:\_AX\...`)가 작성자 PC 기준이라 다른 PC에서는 환경 변수(`IMAJEV_DIR`, `IMAJEV_MODELS`, `IMAJEV_PY`, `LLAMA_SERVER`, `QWEN_DIR`, `IMAJEV_CHECK_FRAME`)로 바꿔야 합니다. 서버 포트(8090/8080)는 GUI에 고정입니다. GUI는 Windows 전용이고, 한 번에 한 모델 서버만 켜도록 막혀 있습니다.
 - ntfy 인증, 사진 첨부, 사진 보관 기능은 없습니다.
+- 캡처한 프레임은 판정 전에 Pillow로 끝까지 읽어 확인합니다. 깨졌거나 너무 작으면(한 변 32px 미만) 모델을 부르지 않고 캡처 오류(`grab failed`, `camera: down`)로 처리해 연속 3번이면 푸시합니다. 정상 프레임의 동작은 그대로입니다. 가짜 ffmpeg 파일로만 시험했고 실제 카메라는 **검증 안 됨**.
 - `ffmpeg`가 없으면 캡처 오류가 `FileNotFoundError`로 표시되고 카메라 오류 일반 문구가 갑니다 (코드상 `GrabError`로 바뀌지 않음).
 
 ## 문제 해결
@@ -407,7 +408,7 @@ python score_log.py --label <id> real prone   # 그 줄에 메모(라벨) 추가
 | `rtsp.env needs RTSP_USER RTSP_PASS RTSP_HOST` | `rtsp.env` 또는 환경 변수에 세 값이 모두 있어야 합니다 |
 | `RTSP_HOST must be host or host:port only` | `rtsp://`나 `/` 없이 `192.168.0.x` 또는 `192.168.0.x:554`로 적으세요 |
 | `stream6 is human PTZ, not the alert loop` | `RTSP_PATH`를 `stream1`로 |
-| `action: error`, `reason: grab failed` | ffmpeg 캡처 실패. 카메라 전원·네트워크·계정, ffmpeg 설치와 PATH 확인 |
+| `action: error`, `reason: grab failed` | ffmpeg 캡처 실패, 또는 받은 프레임이 깨졌음(잘림·빈 파일·읽을 수 없음·한 변이 32px 미만). 깨진 프레임은 판정하지 않고 캡처 오류로 셉니다. 카메라 전원·네트워크·계정, ffmpeg 설치와 PATH 확인 |
 | `reason: FileNotFoundError` | `ffmpeg`가 PATH에 없음 |
 | `reason: ConnectionRefusedError` | 모델 서버가 꺼져 있음 (Jev 8090 / Qwen 8080) |
 | `qwen HTTP N`, `jev HTTP N refused` | 서버가 200이 아닌 응답. 서버 로그 확인 (GUI는 `frames/gui-*.log`) |

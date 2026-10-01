@@ -112,6 +112,24 @@ def grab_rtsp(url: str, dest: Path) -> None:
         raise GrabError("ffmpeg grab empty")
 
 
+MIN_FRAME_PX = 32  # a real stream1 frame is far larger; this only rejects trivial/garbage images
+
+
+def load_frame(path: Path) -> Image.Image:
+    """Decode a grabbed frame fully and return it as RGB. Any problem is a GrabError (camera error)."""
+    try:
+        with Image.open(path) as probe:
+            probe.verify()
+        with Image.open(path) as img:
+            img.load()  # verify() alone does not catch every truncation
+            out = img.convert("RGB")
+    except Exception as e:
+        raise GrabError("bad frame") from e
+    if min(out.size) < MIN_FRAME_PX:
+        raise GrabError("bad frame")
+    return out
+
+
 class ErrorTracker:
     """Phone push when a failure repeats: at N in a row, again every REALERT_SEC, and once on recovery."""
 
@@ -334,8 +352,7 @@ def run_rtsp(once: bool, send: bool, ticks: int = 0) -> None:
     while True:
         try:
             grab_rtsp(url, FRAME)
-            with Image.open(FRAME) as img:
-                img = img.convert("RGB")
+            img = load_frame(FRAME)
             grab_errors.ok(send)
             force = (time.time() - last_infer) >= FORCE_SEC
             prev, did_infer = run_one(
@@ -477,6 +494,70 @@ if __name__ == "__main__" and (len(sys.argv) == 1 or "--selftest" in sys.argv[1:
         finally:
             score_log.MAX_BYTES = _saved_max
     print("ok tick-rotate")
+
+    # --- a bad grabbed frame is a camera error, never judged ---
+    import io
+    import tempfile
+    from PIL import Image as _I2
+    with tempfile.TemporaryDirectory() as _d:
+        _dir = Path(_d)
+        _buf = io.BytesIO()
+        _I2.effect_noise((160, 120), 80).convert("RGB").save(_buf, "JPEG", quality=90)
+        _good = _buf.getvalue()
+        _tiny = io.BytesIO()
+        _I2.new("RGB", (8, 8), (9, 9, 9)).save(_tiny, "JPEG")
+        _modes = {
+            "good": _good,
+            "empty": b"",
+            "trunc": _good[: len(_good) // 2],
+            "junk": b"\x00not a jpeg" * 200,
+            "tiny": _tiny.getvalue() + b"\0" * 1200,  # passes the 1000-byte size check, 8x8 px
+        }
+        _mode = ["good"]
+        _real_call = subprocess.check_call
+
+        def _fake_ffmpeg(cmd, timeout=None):  # stands in for ffmpeg: writes the last argv as the frame
+            assert cmd[0] == "ffmpeg"
+            Path(cmd[-1]).write_bytes(_modes[_mode[0]])
+
+        subprocess.check_call = _fake_ffmpeg
+        _f = _dir / "latest.jpg"
+        try:
+            _mode[0] = "good"
+            _ok_img = load_frame(_f) if (grab_rtsp("rtsp://x", _f) or True) else None
+            assert _ok_img.size == (160, 120) and _ok_img.mode == "RGB"
+            for _m in ("empty", "trunc", "junk", "tiny"):
+                _mode[0] = _m
+                try:
+                    grab_rtsp("rtsp://x", _f)
+                    load_frame(_f)
+                    raise SystemExit(f"bad frame accepted: {_m}")
+                except GrabError:
+                    pass
+
+            # whole loop: three bad frames in a row -> camera push, and the model is never asked
+            _asked = []
+            ask = lambda im: _asked.append(1) or {"should_alert": False}
+            sent.clear()
+            _saved = (FRAME, STATUS, STATUS_HTML, LOG, load_rtsp_url, time.sleep)
+            FRAME, STATUS, STATUS_HTML, LOG = (_dir / "latest.jpg", _dir / "status.json", _dir / "status.html", _dir / "ticks.jsonl")
+            load_rtsp_url = lambda: "rtsp://x"
+            time.sleep = lambda s: None
+            try:
+                _mode[0] = "trunc"
+                run_rtsp(once=False, send=True, ticks=3)
+                assert not _asked, "bad frame reached the model"
+                assert sent and sent[0][0] == WATCH_HINT["grab failed"], sent
+                _rows = [json.loads(x) for x in LOG.read_text(encoding="utf-8").splitlines()]
+                assert len(_rows) == 3 and all(r["action"] == "error" and r["camera"] == "down" for r in _rows)
+                _mode[0] = "good"  # valid frame again (fresh loop): judged, camera ok
+                run_rtsp(once=True, send=True)
+                assert _asked and json.loads(LOG.read_text(encoding="utf-8").splitlines()[-1])["camera"] == "ok"
+            finally:
+                FRAME, STATUS, STATUS_HTML, LOG, load_rtsp_url, time.sleep = _saved
+        finally:
+            subprocess.check_call = _real_call
+    print("ok frame-validate")
     if _prev_log is None:
         os.environ.pop("CRIB_SCORE_LOG", None)
     else:
