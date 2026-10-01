@@ -107,7 +107,7 @@ pip install -r requirements.txt
 D:\Dev\imajev\.venv\Scripts\python.exe imajev_serve.py
 ```
 
-경로 기본값은 [설정](#설정)의 `IMAJEV_DIR`, `IMAJEV_MODELS`입니다. 서버는 `HF_HUB_OFFLINE=1`(미설정 시)로 모델을 오프라인에서 읽고, uvicorn을 `asyncio:SelectorEventLoop`로 띄웁니다 (파일 머리말 주석: Windows 기본 Proactor 루프에서 loopback 응답이 끊겼음). 질문(8개)이 공유하는 이미지 prefill을 한 번만 계산하도록 imajev의 `TorchBackend.score`를 교체합니다. 원본 경로와의 점수 차이는 `imajev_serve.py --check`가 확인합니다 (최대 차이 0.05 미만이어야 통과, **실행해 보지 않음**). `--check`의 기본 프레임 경로는 작성자 PC의 비공개 경로(`C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg`)라서, 직접 쓰려면 코드에서 바꿔야 합니다.
+경로 기본값은 [설정](#설정)의 `IMAJEV_DIR`, `IMAJEV_MODELS`입니다. 서버는 `HF_HUB_OFFLINE=1`(미설정 시)로 모델을 오프라인에서 읽고, uvicorn을 `asyncio:SelectorEventLoop`로 띄웁니다 (파일 머리말 주석: Windows 기본 Proactor 루프에서 loopback 응답이 끊겼음). 질문(8개)이 공유하는 이미지 prefill을 한 번만 계산하도록 imajev의 `TorchBackend.score`를 교체합니다. 원본 경로와의 점수 차이는 `imajev_serve.py --check`가 확인합니다 (최대 차이 0.05 미만이어야 통과, **실행해 보지 않음**). `--check`의 기본 프레임 경로는 작성자 PC의 비공개 경로(`C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg`)이므로, 다른 PC에서는 환경 변수 `IMAJEV_CHECK_FRAME`으로 프레임 파일을 지정하세요.
 
 **Qwen.** `CRIB_MODEL=qwen`일 때 `127.0.0.1:8080`이 필요합니다 (주소는 코드에 고정, 환경 변수 없음).
 
@@ -191,6 +191,7 @@ python crib_gui.py
 | `CRIB_JEV_PORT` | `8090` | `imajev_serve.py` | imajev 서버가 열 포트. 클라이언트(`CRIB_JEV_URL`)와 GUI(8090 고정)는 따라 바뀌지 않으므로 바꾸면 `CRIB_JEV_URL`도 맞춰야 하고 GUI는 인식하지 못함 |
 | `IMAJEV_DIR` | `D:\Dev\imajev` | `imajev_serve.py` | imajev 저장소 위치 |
 | `IMAJEV_MODELS` | `D:\Dev\_Models` | `imajev_serve.py` | 모델 폴더. `imajev-2b/` 어댑터를 이 아래에서 찾음 |
+| `IMAJEV_CHECK_FRAME` | `C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg` | `imajev_serve.py --check` | 속도·점수 비교 검사에 쓸 프레임 파일 |
 | `HF_HUB_OFFLINE` | `1` (미설정일 때만 설정) | `imajev_serve.py` | Hugging Face 오프라인 모드 |
 | `IMAJEV_PY` | `D:\Dev\imajev\.venv\Scripts\python.exe` | `crib_gui.py` | GUI가 Jev 서버를 띄울 Python |
 | `LLAMA_SERVER` | `D:\Dev\llama.cpp\llama-server.exe` | `crib_gui.py` | GUI가 Qwen 서버로 띄울 실행 파일 |
@@ -395,7 +396,7 @@ python score_log.py --label <id> real prone   # 그 줄에 메모(라벨) 추가
 - 움직임이 없으면 모델을 부르지 않습니다. 변화가 임계값(2%) 미만이어도 60초마다는 판정하므로, 그 사이의 변화는 최대 60초 늦게 알 수 있습니다. 판정 자체의 시간은 이 README에서 주장하지 않습니다.
 - 알림 쿨다운은 메모리에만 있어 재시작하면 초기화됩니다. 알림이 계속될 때는 같은 규칙으로 10분마다 다시 갑니다.
 - 캡처·이미지 읽기·모델 호출 중 일반 예외는 오류 틱으로 기록하고 루프를 계속 돌지만, 설정 오류(`CRIB_MODEL`이 잘못됨, `CRIB_JEV_URL`이 loopback이 아님, `CRIB_JEV_ALERT_AT_<RULE>`가 범위 밖)는 `SystemExit`라서 감시 프로세스가 종료됩니다.
-- 기본 경로(`D:\Dev\...`, `C:\_AX\...`)가 작성자 PC 기준이라 환경 변수나 코드 수정이 필요합니다. GUI는 Windows 전용이고, 한 번에 한 모델 서버만 켜도록 막혀 있습니다.
+- 기본 경로(`D:\Dev\...`, `C:\_AX\...`)가 작성자 PC 기준이라 다른 PC에서는 환경 변수(`IMAJEV_DIR`, `IMAJEV_MODELS`, `IMAJEV_PY`, `LLAMA_SERVER`, `QWEN_DIR`, `IMAJEV_CHECK_FRAME`)로 바꿔야 합니다. 서버 포트(8090/8080)는 GUI에 고정입니다. GUI는 Windows 전용이고, 한 번에 한 모델 서버만 켜도록 막혀 있습니다.
 - ntfy 인증, 사진 첨부, 사진 보관 기능은 없습니다.
 - `ffmpeg`가 없으면 캡처 오류가 `FileNotFoundError`로 표시되고 카메라 오류 일반 문구가 갑니다 (코드상 `GrabError`로 바뀌지 않음).
 

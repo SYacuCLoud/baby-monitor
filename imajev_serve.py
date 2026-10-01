@@ -7,8 +7,9 @@
    prefix once, then each question continues from a copy of that cache with only its own
    tail tokens. Same weights, same decision position; see check_shared().
 
-  D:/Dev/imajev/.venv/Scripts/python.exe imajev_serve.py          serve on 8090
-  D:/Dev/imajev/.venv/Scripts/python.exe imajev_serve.py --check  shared vs original logits
+  <imajev venv python> imajev_serve.py          serve on 8090
+  <imajev venv python> imajev_serve.py --check  shared vs original logits (frame: IMAJEV_CHECK_FRAME)
+  (the author's PC uses D:/Dev/imajev/.venv/Scripts/python.exe; paths are env-overridable)
 Not a medical device.
 """
 
@@ -20,6 +21,7 @@ import sys
 IMAJEV = os.environ.get("IMAJEV_DIR", r"D:\Dev\imajev")
 MODELS = os.environ.get("IMAJEV_MODELS", r"D:\Dev\_Models")
 PORT = os.environ.get("CRIB_JEV_PORT", "8090")
+CHECK_FRAME = os.environ.get("IMAJEV_CHECK_FRAME", r"C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg")
 ADAPTER = os.path.join(MODELS, "imajev-2b")
 
 sys.path[:0] = [os.path.join(IMAJEV, "src"), os.path.join(IMAJEV, "scripts"), os.path.join(IMAJEV, "scripts", "playground")]
@@ -104,9 +106,10 @@ def _install():
     return server
 
 
-def check_shared(frame=r"C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg"):
+def check_shared(frame=None):
     """Shared-prefix logits must match imajev's own per-question forward on a real frame."""
     import base64
+    frame = frame or CHECK_FRAME
     from time import perf_counter
     from PIL import Image
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
