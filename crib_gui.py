@@ -22,6 +22,7 @@ from PIL import Image, ImageTk
 
 from judge import model_kind
 from jev_protocol import ALERT_AT
+from score_log import log_judgment
 
 DIR = Path(__file__).resolve().parent
 FRAME = DIR / "frames" / "latest.jpg"
@@ -96,6 +97,16 @@ def verdict_text(row: dict | None) -> tuple[str, str]:
         order = ("face_cover", "face_down", "climbing", "baby_present", "adult_present", "face_visible")
         names = {"baby_present": "아기", "adult_present": "어른", "face_visible": "얼굴", **RULE_KO}
         nums = [f"{names.get(key, key)} {float(scores[key]):.2f}" for key in order if key in scores]
+        parts = row.get("face_down_parts") if isinstance(row.get("face_down_parts"), dict) else None
+        if parts and "face_down" in scores:
+            cues = (("face_down_cheek", "볼"), ("face_down_back", "등"), ("face_down_belly", "배"))
+            try:
+                text = " / ".join(f"{ko} {float(parts[key]):.2f}" for key, ko in cues if key in parts)
+            except (TypeError, ValueError):
+                text = ""
+            if text:  # absent for qwen or old results
+                i = next(i for i, n in enumerate(nums) if n.startswith(RULE_KO["face_down"]))
+                nums[i] += f"  ({text})"
     detail = ". ".join(bits)
     if nums:
         detail = (detail + "\n" if detail else "") + "\n".join(nums) + f"\n알림 기준 {ALERT_AT:.2f}"
@@ -116,6 +127,18 @@ def image_from_clipboard(value) -> tuple[Image.Image | None, str | None]:
             if path.is_file():
                 return Image.open(path).convert("RGB"), None
     return None, "클립보드에 사진이 없습니다."
+
+
+def camera_view(watching: bool, row: dict | None) -> tuple[str, str]:
+    """This window's watch only. No extra camera probe, no push."""
+    if not watching:
+        return "카메라 대기", "#57534e"
+    state = (row or {}).get("camera")
+    if state == "ok":
+        return "카메라 연결됨", "#14532d"
+    if state == "down":
+        return "카메라 끊김", "#9b1c1c"
+    return "카메라 확인 중", "#57534e"
 
 
 def format_status(row: dict | None) -> str:
@@ -309,6 +332,8 @@ class App:
         ttk.Button(top, text="서버 중지", command=self.stop_server).pack(side="left")
         self.server_label = ttk.Label(top, text="")
         self.server_label.pack(side="left", padx=8)
+        self.camera_label = tk.Label(top, text="카메라 대기", fg="#57534e")
+        self.camera_label.pack(side="left", padx=8)
 
         mid = ttk.Frame(self.root, padding=(8, 0, 8, 4))
         mid.pack(fill="x")
@@ -442,6 +467,9 @@ class App:
         kind = self.kind.get()
         up = port_open(PORTS[kind])
         self.server_label.configure(text=f"{kind} {PORTS[kind]} " + ("켜짐" if up else "꺼짐"))
+        watching = self.watch_proc is not None and self.watch_proc.poll() is None
+        cam_text, cam_color = camera_view(watching, read_status())
+        self.camera_label.configure(text=cam_text, fg=cam_color)
         if self._status_hold and not (STATUS.is_file() and STATUS.stat().st_mtime > self._hold_at):
             pass
         else:
@@ -490,7 +518,7 @@ class App:
         )
         if not path:
             return
-        self._run_test(Image.open(path).convert("RGB"))
+        self._run_test(Image.open(path).convert("RGB"), Path(path).name)
 
     def test_clipboard(self) -> None:
         from PIL import ImageGrab
@@ -501,7 +529,7 @@ class App:
             return
         self._run_test(image)
 
-    def _run_test(self, image: Image.Image) -> None:
+    def _run_test(self, image: Image.Image, name: str | None = None) -> None:
         if self._testing:
             self.note.set("테스트가 아직 돌아가는 중입니다.")
             return
@@ -523,6 +551,7 @@ class App:
             try:
                 result = ask(image)
                 fail = None
+                log_judgment(result, kind, "gui-test", image, name or "clipboard")  # never raises
             except Exception as exc:
                 result = None
                 fail = f"{type(exc).__name__}: {exc}"
@@ -588,6 +617,16 @@ def _check() -> None:
     head, detail = verdict_text({"should_alert": False, "baby_present": True, "face_visible": False, "rule": None, "reason": "x"})
     assert head == "알림 없음" and "아기 있음" in detail and "얼굴 안 보임" in detail
     assert "입코 가림 0.76" in verdict_text({"should_alert": False, "scores": {"face_cover": 0.764}})[1]
+    got = verdict_text({"should_alert": False, "scores": {"face_down": 0.35},
+                        "face_down_parts": {"face_down_cheek": 0.2, "face_down_back": 0.72, "face_down_belly": 0.35}})[1]
+    assert "엎드림 0.35  (볼 0.20 / 등 0.72 / 배 0.35)" in got
+    assert "(" not in verdict_text({"should_alert": False, "scores": {"face_down": 0.35}})[1]
+    assert "(" not in verdict_text({"should_alert": False, "scores": {"face_down": 0.35}, "face_down_parts": "x"})[1]
+    assert "(" not in verdict_text({"should_alert": False, "scores": {"face_down": 0.35}, "face_down_parts": {"face_down_back": None}})[1]
+    assert camera_view(False, {"camera": "ok"})[0] == "카메라 대기"
+    assert camera_view(True, {"camera": "ok"}) == ("카메라 연결됨", "#14532d")
+    assert camera_view(True, {"camera": "down"})[0] == "카메라 끊김"
+    assert camera_view(True, {})[0] == "카메라 확인 중"
     print("ok crib-gui")
 
 

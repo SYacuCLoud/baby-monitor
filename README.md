@@ -34,7 +34,7 @@
 | rule | 의미 |
 | --- | --- |
 | `face_cover` | 이불/베개/옷이 입이나 코를 가림 |
-| `face_down` | 얼굴이 매트리스에 파묻힘 |
+| `face_down` | 엎드림. Jev는 보이는 단서 3개(볼/얼굴이 바닥에 눌림, 등·엉덩이·뒤통수가 위, 배·가슴이 바닥에 눌려 안 보임)를 따로 묻고 **3개 단서 중 두 번째로 높은 값**(second highest of 3 cues, 단서 2개 이상이 일치해야 함)을 `face_down` 점수 하나로 표시. 원값 3개는 `face_down_parts`에 남음 |
 | `climbing` | 난간을 타고 기어오름 |
 | `empty` | 아기 없고 어른도 없음 |
 
@@ -91,12 +91,12 @@ Qwen3-VL-4B Instruct **Q4_K_M** + mmproj. 예:
 - `CRIB_JEV_URL` 기본값 `http://127.0.0.1:8090/v1/systemone` (8080은 llama-server)
 - 서버: [imajev](https://github.com/mohit67890/imajev)를 `D:\Dev\imajev`에, 모델을 `D:\Dev\_Models\Qwen3.5-2B`·`imajev-2b`에 둡니다. 실행: `D:\Dev\imajev\.venv\Scripts\python.exe imajev_serve.py`
 - `imajev_serve.py`는 uvicorn을 SelectorEventLoop으로 띄웁니다. Windows 기본 Proactor에서는 응답 약 30%가 WinError 10054로 끊겼습니다.
-- 속도: 사진과 공통 프롬프트를 한 번만 계산하고(prefix 공유), 질문 6개 꼬리를 한 배치로 돌립니다. 판정 1회 3.4초 → 약 1초(HTTP 포함)입니다. 원본 경로와의 확률 차이는 0.02 이하이며 `imajev_serve.py --check`로 확인합니다.
+- 속도: 사진과 공통 프롬프트를 한 번만 계산하고(prefix 공유), 질문 8개 꼬리를 한 배치로 돌립니다. 판정 1회 3.4초 → 약 1초(HTTP 포함)입니다. 원본 경로와의 확률 차이는 0.02 이하이며 `imajev_serve.py --check`로 확인합니다.
 - venv에 `triton-windows<3.7`, `flash-linear-attention`을 설치했습니다. `--fast`(CUDA 그래프)는 이 PC에서 오히려 느려서 쓰지 않습니다.
-- 프레임은 최상위 `images`의 data URL로 보냅니다. 질문 6개는 noul입니다.
+- 프레임은 최상위 `images`의 data URL로 보냅니다. 질문 8개는 noul입니다.
 - 응답 `usage.images`가 1장이 아니면 서버가 사진을 안 본 것이라 판정을 버립니다 (텍스트 전용 Jev 차단).
 
-`api.typesafe.ai`로는 보내지 않습니다. Jev는 문장을 쓰지 않아서 `reason`은 비고, 알림은 규칙 이름만 갑니다. 애매하면 알리지 않습니다 (`ALERT_AT=0.60`).
+`api.typesafe.ai`로는 보내지 않습니다. Jev는 문장을 쓰지 않아서 `reason`은 비고, 알림은 규칙 이름만 갑니다. 애매하면 알리지 않습니다 (`ALERT_AT=0.60`). 규칙별 기준은 `CRIB_JEV_ALERT_AT_<RULE>`(예: `CRIB_JEV_ALERT_AT_FACE_DOWN=0.45`, 0 초과 1 이하, 아니면 종료)로 바꿉니다. GUI의 "알림 기준" 표시는 기본값 0.60 그대로입니다.
 
 테스트한 PC: Win11, RTX 3070 Laptop 8GB, CUDA UMD 13.3. 이 GPU에서 7B vLLM은 건너뜀.
 
@@ -164,6 +164,7 @@ python watch.py --image photo.jpg --once
 | `motion.py` | absdiff. `PIXEL_DELTA=25`, `MIN_CHANGED=0.02` |
 | `ntfy_alert.py` | 텍스트만. 빈 메시지·바이너리 거부 |
 | `watch.py` | 파일 또는 `stream1` TCP 루프. 같은 규칙 10분 쿨다운 |
+| `score_log.py` | 판정마다 점수 한 줄을 `logs/scores.jsonl`에 남김. 표/CSV/라벨 CLI |
 | `crib_gui.py` | 창. 감시/서버 시작, 최근 사진, 기록, 트레이 |
 | `ntfy.env` | 로컬 토픽. git에 넣지 않음 |
 | `rtsp.env` | LAN `stream1`만. git에 넣지 않음 |
@@ -171,9 +172,28 @@ python watch.py --image photo.jpg --once
 | `docs/architecture.html` | 파이프라인 요약 |
 | `SECURITY.md` | 시크릿·취약점 보고 |
 
+## 점수 기록
+
+판정할 때마다 점수 한 줄(JSON)을 `logs/scores.jsonl`에 추가합니다. 파일 테스트·붙여넣기(`gui-test`)와 감시(`watch`) 둘 다 남깁니다. 시각(+09:00 포함), 모델, 모든 점수와 `face_down_parts`(볼/등/배), 규칙별 알림 기준, 알림 여부, 사진 이름, 짧은 `id`가 들어갑니다. 사진 내용은 기본으로 저장하지 않습니다. 5MB가 넘으면 `.1`, `.2`로 넘기고 최대 3개만 유지합니다. 기록 실패는 판정을 막지 않습니다(경고 1회). 점수 기록은 GUI의 "감시 기록"과 별개입니다.
+
+| 환경변수 | 뜻 |
+| --- | --- |
+| `CRIB_SCORE_LOG` | 로그 파일 경로. `off`면 기록 안 함 |
+| `CRIB_LOG_SAVE_AMBIGUOUS=0.3-0.7` | 규칙 점수(`face_down`, `face_cover`, `climbing`)가 이 범위에 들면 그 사진만 `logs/frames/`에 저장. 기본 꺼짐. 형식이 틀리면 경고하고 끈 것으로 처리 |
+| `CRIB_LOG_SAVE_FRAMES=1` | 판정한 사진을 전부 저장. 기본 꺼짐 |
+| `CRIB_LOG_MAX_FRAMES` | 저장 사진 최대 수, 기본 200. 넘으면 오래된 것부터 삭제 |
+
+**주의: 저장된 사진(`logs/frames/*.jpg`)은 아기 사진이 이 PC에 그대로 남는 것입니다. 기본은 꺼짐이고, 켠 경우에만 저장됩니다.** `logs/`는 git에 들어가지 않습니다. 공유하기 전에 지우세요.
+
+```
+python score_log.py --tail 20            # 최근 20줄 표 (시각, id, 모델, 엎드림+볼/등/배, 입코, 알림, 사진, 라벨)
+python score_log.py --csv                # CSV 전체 (--tail N과 같이 쓰면 최근 N줄)
+python score_log.py --label <id> real prone   # 그 줄에 메모. 기록 파일을 고치지 않고 라벨 줄을 덧붙임. 최신 라벨이 표시됨
+```
+
 ## 개인정보
 
-프레임은 이 PC에서만 추론합니다. ntfy 본문에 사진·주소·토픽 설명 넣지 마세요. 공개 저장소에 아기 사진, RTSP URL, `ntfy.env`를 올리지 마세요. 자세한 내용은 [SECURITY.md](SECURITY.md).
+프레임은 이 PC에서만 추론합니다. ntfy 본문에 사진·주소·토픽 설명 넣지 마세요. `CRIB_LOG_SAVE_FRAMES`/`CRIB_LOG_SAVE_AMBIGUOUS`를 켜면 `logs/frames/`에 아기 사진이 로컬 저장됩니다(기본 꺼짐, 위 "점수 기록"). 공개 저장소에 아기 사진, RTSP URL, `ntfy.env`를 올리지 마세요. 자세한 내용은 [SECURITY.md](SECURITY.md).
 
 ## License
 

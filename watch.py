@@ -15,7 +15,8 @@ from PIL import Image
 
 from motion import changed_fraction, should_wake, to_gray
 from ntfy_alert import notify, notify_alert
-from judge import ask
+from judge import ask, model_kind
+from score_log import log_judgment
 
 DIR = Path(__file__).resolve().parent
 RTSP_ENV = DIR / "rtsp.env"
@@ -205,6 +206,7 @@ def decide(
             "skipped": True,
         }, gray
     result = ask(image)
+    log_judgment(result, model_kind(), "watch", image)  # never raises
     result["motion"] = motion
     result["skipped"] = False
     return result, gray
@@ -241,6 +243,8 @@ def _print_tick(result: dict, action: str) -> None:
         "action": action,
         **{k: result.get(k) for k in keys},
     }
+    if result.get("camera"):
+        row["camera"] = result["camera"]
     line = json.dumps(row, ensure_ascii=False)
     print(line, flush=True)
     FRAME.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +267,7 @@ def run_one(
     force: bool = False,
     base_gray=None,
     model_errors: "ErrorTracker | None" = None,
+    camera: str | None = None,
 ):
     try:
         result, gray = decide(image, prev_gray, force=force, base_gray=base_gray)
@@ -278,6 +283,8 @@ def run_one(
             "error": True,
         }
         gray = prev_gray
+    if camera:
+        result["camera"] = camera
     action = maybe_alert(result, cool, send)
     _print_tick(result, action)
     if model_errors is not None:
@@ -288,7 +295,7 @@ def run_one(
     return gray, not result.get("skipped") and not result.get("error")
 
 
-def _error_tick(reason: str) -> None:
+def _error_tick(reason: str, camera: str | None = None) -> None:
     result = {
         "should_alert": False,
         "baby_present": None,
@@ -299,6 +306,8 @@ def _error_tick(reason: str) -> None:
         "skipped": False,
         "error": True,
     }
+    if camera:
+        result["camera"] = camera
     _print_tick(result, "error")
 
 
@@ -320,7 +329,8 @@ def run_rtsp(once: bool, send: bool, ticks: int = 0) -> None:
             grab_errors.ok(send)
             force = (time.time() - last_infer) >= FORCE_SEC
             prev, did_infer = run_one(
-                img, cool, send, prev, force=force, base_gray=base, model_errors=model_errors
+                img, cool, send, prev, force=force, base_gray=base, model_errors=model_errors,
+                camera="ok",
             )
             if did_infer:
                 last_infer = time.time()
@@ -328,7 +338,7 @@ def run_rtsp(once: bool, send: bool, ticks: int = 0) -> None:
         except Exception as e:
             # GrabError, truncated JPEG (OSError), anything else: report it, keep watching.
             reason = "grab failed" if isinstance(e, GrabError) else type(e).__name__
-            _error_tick(reason)
+            _error_tick(reason, camera="down")
             grab_errors.fail(send, hint=watch_hint(reason))
         # Only say "still watching" when it is true: camera and model both OK and a recent verdict.
         healthy = (
@@ -366,6 +376,8 @@ def main() -> None:
 if __name__ == "__main__":
     import sys
 
+    _prev_log = os.environ.get("CRIB_SCORE_LOG")
+    os.environ["CRIB_SCORE_LOG"] = "off"  # self-test must not write a real log
     c = Cooldown(seconds=10)
     assert c.allow("face_cover", now=1)
     c.mark("face_cover", now=1)
@@ -430,5 +442,9 @@ if __name__ == "__main__":
     run_one(base_img, Cooldown(), True, None, model_errors=mt)
     assert sent and sent[0][0] == "model down"
     print("ok failures")
+    if _prev_log is None:
+        os.environ.pop("CRIB_SCORE_LOG", None)
+    else:
+        os.environ["CRIB_SCORE_LOG"] = _prev_log
     if len(sys.argv) > 1:
         main()
