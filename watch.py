@@ -373,9 +373,9 @@ def main() -> None:
     raise SystemExit("need --image or rtsp.env")
 
 
-if __name__ == "__main__":
-    import sys
-
+if __name__ == "__main__" and (len(sys.argv) == 1 or "--selftest" in sys.argv[1:]):
+    # Self-test only: it swaps global ask/notify for stubs, so it must never run
+    # in the same process as the real CLI (main) or the real push/model get lost.
     _prev_log = os.environ.get("CRIB_SCORE_LOG")
     os.environ["CRIB_SCORE_LOG"] = "off"  # self-test must not write a real log
     c = Cooldown(seconds=10)
@@ -446,5 +446,5 @@ if __name__ == "__main__":
         os.environ.pop("CRIB_SCORE_LOG", None)
     else:
         os.environ["CRIB_SCORE_LOG"] = _prev_log
-    if len(sys.argv) > 1:
-        main()
+elif __name__ == "__main__":
+    main()
