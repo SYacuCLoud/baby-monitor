@@ -4,7 +4,7 @@ Wire: POST /v1/systemone, Jev body + top-level
 images=["data:image/jpeg;base64,..."] (imajev-2b/4b/9b playground server).
 Default: http loopback only. Opt-in remote mode (Jev on Google Colab behind an https tunnel):
 CRIB_JEV_URL=https://... + CRIB_JEV_TOKEN (see remote_settings.py). Remote needs https AND a token;
-live watch (live_context) always stays on the local server. Plain http to a non-loopback host is refused.
+live watch uses it only with CRIB_JEV_REMOTE_LIVE=1. Plain http to a non-loopback host is refused.
 The reply must echo usage.images with one entry, else the server ignored the
 photo (text-only Jev) and the verdict is dropped.
 
@@ -285,13 +285,22 @@ def resolve_endpoint(live: bool = False, environ=None) -> Endpoint:
     if scheme != "https":
         # http to a non-loopback host (or anything else odd) is refused, same as before.
         return _local_endpoint(s.url)
-    if live:
-        # Live watch always stays on the local server. (The explicit live opt-in comes in its own commit.)
+    if live and not s.remote_live:
         if not _warned_live:
             _warned_live = True
-            print("[jev] remote configured but live watch stays local", file=sys.stderr, flush=True)
+            print("[jev] remote configured but live watch stays local (CRIB_JEV_REMOTE_LIVE is off)",
+                  file=sys.stderr, flush=True)
         return _local_endpoint(DEFAULT_URL)
     return _remote_endpoint(s)
+
+
+def remote_live_active(environ=None) -> bool:
+    """True if live watch would use the remote backend. Never raises."""
+    try:
+        s = remote_settings.load(environ)
+        return remote_settings.uses_remote(s, True) and urlparse(s.url).scheme == "https"
+    except Exception:
+        return False
 
 
 def _timeout_for(ep: Endpoint, timeout, environ=None):

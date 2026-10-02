@@ -42,6 +42,16 @@ WATCH_HINT = {
     "grab failed": "캠 화면을 못 받음. 전원, 와이파이, Tapo 앱을 확인하세요",
 }
 MODEL_HINT = "판정 모델 오류. llama-server나 Jev 서버, PC를 확인하세요"
+# Only used when live watch really runs on the remote (Colab) Jev (CRIB_JEV_REMOTE_LIVE=1).
+REMOTE_MODEL_HINT = (
+    "판정 불가: 원격 Jev(Colab)에 연결할 수 없거나 토큰이 거부됨. "
+    "아기를 직접 확인하고, Colab·터널·토큰이나 로컬 서버를 확인하세요"
+)
+
+
+def remote_live() -> bool:
+    """True only if the jev model is selected AND remote is explicitly enabled for live watch."""
+    return model_kind() == "jev" and jev_protocol.remote_live_active()
 
 
 def watch_hint(reason: str) -> str:
@@ -225,7 +235,7 @@ def decide(
             "motion": False,
             "skipped": True,
         }, gray
-    with jev_protocol.live_context():  # live watch never uses the remote Jev unless the live opt-in is on
+    with jev_protocol.live_context():  # remote Jev only counts here with CRIB_JEV_REMOTE_LIVE=1
         result = ask(image)
     log_judgment(result, model_kind(), "watch", image)  # never raises
     result["motion"] = motion
@@ -276,6 +286,8 @@ def _print_tick(result: dict, action: str) -> None:
     }
     if result.get("camera"):
         row["camera"] = result["camera"]
+    if result.get("backend") == "remote":
+        row["backend"] = "remote"
     line = json.dumps(row, ensure_ascii=False)
     print(line, flush=True)
     FRAME.parent.mkdir(parents=True, exist_ok=True)
@@ -312,6 +324,8 @@ def run_one(
             "skipped": False,
             "error": True,
         }
+        if remote_live():
+            result["backend"] = "remote"  # marker only: no URL, no token
         gray = prev_gray
     if camera:
         result["camera"] = camera
@@ -319,7 +333,8 @@ def run_one(
     _print_tick(result, action)
     if model_errors is not None:
         if result.get("error"):
-            model_errors.fail(send)
+            # Remote live: the push says "판정 불가". Local stays on the ErrorTracker's own hint.
+            model_errors.fail(send, hint=REMOTE_MODEL_HINT if result.get("backend") == "remote" else None)
         elif not result.get("skipped"):
             model_errors.ok(send)
     return gray, not result.get("skipped") and not result.get("error")

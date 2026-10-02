@@ -193,7 +193,7 @@ def log_judgment(result, model: str, source: str, image=None, image_name: str | 
                 frame = _save_frame(image, path, now.strftime("%Y%m%d-%H%M%S-%f")[:-3], row_id)
         except Exception as exc:
             _warn(f"could not save frame: {type(exc).__name__}")
-        _append(path, {
+        row = {
             "type": "score",
             "id": row_id,
             "time": now.isoformat(timespec="seconds"),
@@ -207,7 +207,10 @@ def log_judgment(result, model: str, source: str, image=None, image_name: str | 
             "reason": str(result.get("reason") or "")[:300],
             "image": image_name,
             "frame": frame,
-        })
+        }
+        if result.get("backend") == "remote":
+            row["backend"] = "remote"  # marker only, never the URL or token
+        _append(path, row)
         return row_id
     except BaseException as exc:  # never break judging because of the log
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
