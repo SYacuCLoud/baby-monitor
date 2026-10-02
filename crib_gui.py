@@ -532,6 +532,13 @@ class App:
             return None
         if "CRIB_JEV_BACKEND" in remote_settings.env_overrides():
             return "원격 모드는 환경 변수 CRIB_JEV_BACKEND로 정해져 있어 GUI에서 바꿀 수 없습니다. 꺼야 할 로컬 프로세스도 없습니다."
+        # Never switch silently while the watch may be using the remote: the watch re-reads the settings
+        # for every judgment, so it would suddenly fall back to a local server that may be off.
+        if self.watch_proc and self.watch_proc.poll() is None:
+            return "감시 중에는 원격 설정을 바꾸지 않습니다. 먼저 감시를 멈춘 뒤 다시 눌러 주세요."
+        if settings.remote_live:
+            return ("'실시간 감시에도 원격 사용'이 켜져 있어 원격 설정을 바꾸지 않습니다. 다른 곳에서 감시가 돌고 있을 수 있습니다. "
+                    "감시를 멈추고 체크를 끈 뒤 저장하고 다시 눌러 주세요.")
         saved = remote_settings.Settings("local", settings.url, settings.token, settings.timeout, settings.remote_live)
         try:
             remote_settings.save(saved)
@@ -539,10 +546,7 @@ class App:
             return f"원격 연결을 해제하지 못했습니다: {type(exc).__name__}"
         self.r_backend.set("local")
         self._refresh_backend()
-        warn = ""
-        if self.watch_proc and self.watch_proc.poll() is None:
-            warn = " 감시가 켜져 있으면 로컬 서버를 쓰므로 로컬 서버가 꺼져 있으면 판정이 실패합니다."
-        return "원격 Jev 연결을 해제했습니다(로컬로 전환, 끌 프로세스 없음)." + warn
+        return "원격 Jev 연결을 해제했습니다(로컬로 전환, 끌 프로세스 없음)."
 
     def _stop_proc(self, proc: subprocess.Popen) -> bool:
         """Stop proc and its whole process tree (terminate/kill, taskkill /T /F on Windows)."""

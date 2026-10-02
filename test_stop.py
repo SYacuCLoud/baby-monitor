@@ -185,8 +185,8 @@ def test_gui_stop_logic() -> None:
             with mock.patch.object(gui, "listening_pid", side_effect=FileNotFoundError("netstat")):
                 app.stop_server()
             assert "중지하지 못했습니다" in app.note.set.call_args[0][0]
-            # 6) remote mode: no process, 'off' = back to local; token kept, nothing else changed
-            R.save(R.Settings("remote", "https://abc.trycloudflare.com", "tok_0123456789", "", True), env_file)
+            # 6) remote mode, no watch, live off: no process, 'off' = back to local; URL/token kept
+            R.save(R.Settings("remote", "https://abc.trycloudflare.com", "tok_0123456789", "", False), env_file)
             app = make_app(gui)
             with mock.patch.object(gui, "listening_pid", return_value=None):
                 msg = app._stop_server()
@@ -194,7 +194,32 @@ def test_gui_stop_logic() -> None:
             now = R.load()
             assert now.backend == "local"
             app.r_backend.set.assert_called_with("local")
-            assert "CRIB_JEV_REMOTE_LIVE=1" in env_file.read_text()
+            text = env_file.read_text()
+            assert "CRIB_JEV_BACKEND=local" in text and "https://abc.trycloudflare.com" in text and "tok_0123456789" in text
+            # 6b) remote mode and a watch is running: settings file must stay byte-identical
+            for live in (False, True):
+                R.save(R.Settings("remote", "https://abc.trycloudflare.com", "tok_0123456789", "", live), env_file)
+                before = env_file.read_bytes()
+                app = make_app(gui)
+                app.watch_proc = mock.Mock(poll=lambda: None)
+                with mock.patch.object(gui, "listening_pid", return_value=None):
+                    msg = app._stop_server()
+                assert "감시 중에는 원격 설정을 바꾸지 않습니다" in msg, msg
+                assert env_file.read_bytes() == before and R.load().backend == "remote"
+                app.r_backend.set.assert_not_called()
+            # 6c) remote-live checkbox on, no GUI watch (an outside watch may be live): do not switch either
+            R.save(R.Settings("remote", "https://abc.trycloudflare.com", "tok_0123456789", "", True), env_file)
+            before = env_file.read_bytes()
+            app = make_app(gui)
+            with mock.patch.object(gui, "listening_pid", return_value=None):
+                msg = app._stop_server()
+            assert "바꾸지 않습니다" in msg and env_file.read_bytes() == before, msg
+            # 6d) watch already exited (poll() is not None) counts as not running
+            R.save(R.Settings("remote", "https://abc.trycloudflare.com", "tok_0123456789", "", False), env_file)
+            app = make_app(gui)
+            app.watch_proc = mock.Mock(poll=lambda: 1)
+            with mock.patch.object(gui, "listening_pid", return_value=None):
+                assert "해제" in app._stop_server()
             # 7) plain local, nothing running
             with mock.patch.object(gui, "listening_pid", return_value=None):
                 assert app._stop_server() == "서버가 꺼져 있습니다."
