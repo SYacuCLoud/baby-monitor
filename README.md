@@ -9,7 +9,7 @@
 
 - [하는 일](#하는-일) · [동작 방식](#동작-방식) · [검증 상태](#검증-상태)
 - [필요한 것](#필요한-것) · [설치와 실행](#설치와-실행)
-- [설정](#설정) · [판정 규칙](#판정-규칙) · [알림 동작](#알림-동작) · [점수 기록](#점수-기록)
+- [설정](#설정) · [판정 규칙](#판정-규칙) · [알림 동작](#알림-동작) · [점수 기록](#점수-기록) · [사진 폴더 점수 측정](#사진-폴더-점수-측정)
 - [파일 구조](#파일-구조) · [개인정보와 보안](#개인정보와-보안)
 - [한계와 알려진 문제](#한계와-알려진-문제) · [문제 해결](#문제-해결) · [License](#license)
 
@@ -125,6 +125,7 @@ python qwen_client.py
 python jev_protocol.py
 python judge.py
 python score_log.py             # 임시 폴더에서만 돌고 실제 logs/는 건드리지 않음
+python score_folder.py --selftest   # 가짜 판정 함수와 임시 폴더만 씀
 python watch.py
 python crib_gui.py --check
 python ntfy_alert.py            # ntfy.env가 없으면 만듦. 푸시는 안 보냄
@@ -342,6 +343,32 @@ python score_log.py --label <id> real prone   # 그 줄에 메모(라벨) 추가
 
 표 열: 시각, id, 모델, 엎드림(`face_down`), 볼, 등, 배, 입코(`face_cover`), 알림(`ALERT`), 사진 유무(`y`), 라벨. 라벨은 기록 파일을 고치지 않고 `type: label` 줄을 덧붙이는 방식이고, 같은 id에 여러 번 달면 마지막 것이 보입니다. 없는 id면 오류로 끝나고, 로그가 아직 없으면 `no log yet`을 출력하고 종료 코드 1입니다. 라벨 내용은 사람이 붙이는 메모일 뿐 판정에 쓰이지 않습니다. `python score_log.py`를 인자 없이 실행하면 자체 검사입니다.
 
+## 사진 폴더 점수 측정
+
+`score_folder.py`는 폴더 안의 사진을 지금 켜져 있는 판정 서버(Jev 또는 Qwen)에 한 장씩 보내 점수를 표로 보여주는 **읽기 전용** 도구입니다. 임계값을 정할 때 참고할 숫자를 모으려는 용도입니다. GUI의 "사진 한 장 테스트"와 같은 경로(`Image.open(...).convert("RGB")` → `judge.ask`)를 그대로 쓰고, HTTP 코드를 따로 갖고 있지 않습니다.
+
+**파일 이름 규칙**: 이름이 `<접두어>_`로 시작하면 그 접두어가 정답 태그입니다 (대소문자 무시). 예: `엎드림_01.jpg`, `prone_02.png`.
+
+| 접두어 | 태그 | 접두어 | 태그 |
+| --- | --- | --- | --- |
+| `엎드림_` / `prone_` | prone | `안김_` / `held_` | held |
+| `정상_` / `normal_` | normal | `빈침대_` / `empty_` | empty |
+| `옆으로_` / `side_` | side | `앉음_` / `sitting_` | sitting |
+
+접두어가 없거나 모르는 이름은 태그 `?`로 표시하고 요약의 임계값 계산에서 뺍니다. 확장자는 jpg, jpeg, png, bmp, webp만 읽습니다.
+
+```text
+python score_folder.py <폴더> [--model jev|qwen] [--csv out.csv]
+python score_folder.py --selftest
+```
+
+- 판정 서버를 먼저 켜 두어야 합니다 (`--model` 기본값은 `jev`).
+- 표: 파일 이름순으로 `face_down`(두 번째로 높은 값), 볼/등/배, `face_cover`, `climbing`, baby/adult/face, 알림 yes/no(지금 적용 중인 규칙별 기준 `alert_at` 사용), 정답 태그. Qwen은 점수 대신 yes/no만 주므로 많은 칸이 `-`입니다.
+- 사진 한 장이 실패하면 그 줄에 `ERR`과 이유만 표시하고 나머지는 계속합니다. 전부 실패하면 종료 코드 1입니다.
+- 요약: 태그별 장수와 `face_down`, `face_cover`의 최소/평균/최대. 엎드림(prone)이 5장 이상이고 그 외 태그(`?` 제외)도 5장 이상일 때만 `face_down` 기준 범위(그 외 태그의 최댓값 ~ 엎드림의 최솟값)를 보여주고, 아니면 `not enough photos (need >=5 per group)`, 범위가 겹치면 `not separable`을 출력합니다. **이 범위는 참고용 힌트일 뿐이며 자동으로 적용하지 않습니다.** 임계값을 바꾸려면 `CRIB_JEV_ALERT_AT_FACE_DOWN`을 직접 설정하세요.
+- 사진은 이 PC에만 있고 어디에도 올리거나 푸시하지 않습니다. 푸시 알림, `frames/`(ticks, status, latest.jpg), `logs/scores.jsonl` 모두 건드리지 않습니다. 파일을 쓰는 것은 `--csv`를 준 경우의 그 CSV 하나뿐입니다 (엑셀용 UTF-8 BOM).
+- 자체 검사는 가짜 판정 함수와 임시 폴더로 표, 요약, CSV, 5장 규칙을 확인한 것입니다. **실제 모델(Jev·Qwen)로 돌린 결과는 검증 안 됨**입니다.
+
 ## 파일 구조
 
 | 파일 | 역할 |
@@ -352,6 +379,7 @@ python score_log.py --label <id> real prone   # 그 줄에 메모(라벨) 추가
 | `jev_protocol.py` | Jev 클라이언트. 질문 8개, 엎드림 단서 3개 → 두 번째로 높은 값, 점수 → 규칙 변환, 규칙별 기준, loopback 강제 |
 | `imajev_serve.py` | imajev playground 서버 실행기 (SelectorEventLoop, 이미지 prefill 공유) |
 | `score_log.py` | 판정 점수 기록(`logs/scores.jsonl`), 사진 저장 옵션, `--tail/--csv/--label` CLI |
+| `score_folder.py` | 사진 폴더 점수 측정 CLI (읽기 전용: 푸시·기록·상태 파일 쓰기 없음) |
 | `qwen_client.py` | llama-server 클라이언트, JSON 파싱, `normalize` 보정, 이미지 축소 |
 | `prompt.txt` | Qwen용 프롬프트 (Jev 경로는 쓰지 않음) |
 | `ntfy_alert.py` | ntfy 텍스트 푸시. 빈 메시지와 `\x00` 포함 메시지는 거부 |
