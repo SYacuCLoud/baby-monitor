@@ -6,6 +6,8 @@ Default file: logs/scores.jsonl next to this program. Env:
   CRIB_LOG_SAVE_AMBIGUOUS=lo-hi save only when a rule score is in [lo,hi], e.g. 0.3-0.7 (default OFF)
   CRIB_LOG_MAX_FRAMES=200       keep at most this many saved frames, oldest deleted
 Logging never raises. It prints at most one warning per run.
+Permissions (POSIX): directories this module creates are 0o700, log files and saved JPEGs 0o600 (best effort;
+on Windows chmod is mostly a no-op and access is governed by the folder ACLs).
 CLI: python score_log.py --tail 20 | --csv | --label <id> <text>     (no args = self-test)
 """
 
@@ -43,6 +45,37 @@ def _warn(msg: str) -> None:
         print(f"[score_log] {msg} (further log problems are silent)", file=sys.stderr, flush=True)
     except Exception:
         pass
+
+
+def _chmod(path: Path, mode: int) -> None:
+    """Best effort. Never raises; a no-op in practice on Windows."""
+    try:
+        os.chmod(path, mode)
+    except Exception:
+        pass
+
+
+def _mkdir_private(folder: Path) -> None:
+    """mkdir -p where every directory CREATED here gets 0o700. Existing directories are left alone."""
+    missing = []
+    d = folder
+    while not d.exists() and d != d.parent:
+        missing.append(d)
+        d = d.parent
+    for d in reversed(missing):
+        try:
+            d.mkdir(mode=0o700, exist_ok=True)
+        except FileExistsError:
+            pass
+        _chmod(d, 0o700)  # mkdir mode is masked by umask
+    folder.mkdir(parents=True, exist_ok=True)  # raises as before if a path part is a file
+
+
+def _open_private(path: Path, flags: int):
+    """Open a file for writing, creating it 0o600 (no wider window under a lax umask), and re-assert the mode."""
+    fd = os.open(path, flags | os.O_CREAT, 0o600)
+    _chmod(path, 0o600)
+    return fd
 
 
 def log_path() -> Path | None:
@@ -94,9 +127,11 @@ def _save_frame(image, path: Path, stamp: str, row_id: str) -> str | None:
     if image is None or not hasattr(image, "save"):
         return None
     folder = path.parent / "frames"
-    folder.mkdir(parents=True, exist_ok=True)
+    _mkdir_private(folder)
     name = f"{stamp}_{row_id}.jpg"
-    image.convert("RGB").save(folder / name, "JPEG", quality=90)
+    fd = _open_private(folder / name, os.O_WRONLY | os.O_TRUNC)
+    with os.fdopen(fd, "wb") as fh:
+        image.convert("RGB").save(fh, "JPEG", quality=90)
     old = sorted(p for p in folder.glob("*.jpg") if p.is_file())
     for p in old[: max(0, len(old) - _max_frames())]:
         try:
@@ -116,15 +151,18 @@ def _rotate(path: Path, incoming: int) -> None:
     for i in range(KEEP - 1, 0, -1):
         src = path if i == 1 else path.with_name(f"{path.name}.{i - 1}")
         if src.exists():
-            os.replace(src, path.with_name(f"{path.name}.{i}"))
+            dst = path.with_name(f"{path.name}.{i}")
+            os.replace(src, dst)
+            _chmod(dst, 0o600)
 
 
 def _append(path: Path, row: dict) -> None:
     line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
     with _lock:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _mkdir_private(path.parent)
         _rotate(path, len(line.encode("utf-8")))
-        with open(path, "a", encoding="utf-8") as fh:
+        fd = _open_private(path, os.O_WRONLY | os.O_APPEND)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(line)
 
 
@@ -284,6 +322,63 @@ def _main(argv: list[str]) -> int:
     return 0
 
 
+def _check_permissions(verdict: dict, img, tmp: str) -> None:
+    """POSIX only: private dirs/files, rotated files too, pre-existing lax files tightened, never raises."""
+    if os.name != "posix" or not hasattr(os, "geteuid"):
+        print("skip permission checks (not POSIX)")
+        return
+    global MAX_BYTES
+    mode = lambda p: p.stat().st_mode & 0o777  # noqa: E731
+    old_umask = os.umask(0o022)  # a lax umask must not leak through
+    saved_max, saved_env = MAX_BYTES, os.environ.get("CRIB_LOG_SAVE_FRAMES")
+    try:
+        os.environ["CRIB_LOG_SAVE_FRAMES"] = "1"
+        log = Path(tmp) / "perm" / "deeper" / "s.jsonl"
+        os.environ["CRIB_SCORE_LOG"] = str(log)
+        assert log_judgment(verdict, "jev", "watch", img) is not None
+        frames = log.parent / "frames"
+        assert mode(log.parent) == 0o700 and mode(log.parent.parent) == 0o700 and mode(frames) == 0o700
+        assert mode(log) == 0o600
+        jpgs = list(frames.glob("*.jpg"))
+        assert len(jpgs) == 1 and mode(jpgs[0]) == 0o600
+        # rotated files stay 0o600
+        MAX_BYTES = 600
+        for _ in range(40):
+            log_judgment(verdict, "jev", "watch")
+        rotated = [p for p in log.parent.iterdir() if p.name.startswith("s.jsonl")]
+        assert len(rotated) == 3 and all(mode(p) == 0o600 for p in rotated), [oct(mode(p)) for p in rotated]
+        MAX_BYTES = saved_max
+        # an existing directory is NOT changed (e.g. CRIB_SCORE_LOG=/tmp/x.jsonl), an old lax file IS tightened
+        shared = Path(tmp) / "shared"
+        shared.mkdir()
+        os.chmod(shared, 0o755)
+        lax = shared / "s.jsonl"
+        lax.write_text("", encoding="utf-8")
+        os.chmod(lax, 0o644)
+        os.environ["CRIB_SCORE_LOG"] = str(lax)
+        assert log_judgment(verdict, "jev", "watch") is not None
+        assert mode(shared) == 0o755 and mode(lax) == 0o600
+        # chmod failing must never break logging
+        real = os.chmod
+
+        def boom(*a, **k):
+            raise PermissionError("no")
+
+        os.chmod = boom
+        try:
+            assert log_judgment(verdict, "jev", "watch", img) is not None
+            assert len(read_rows(lax)) == 2
+        finally:
+            os.chmod = real
+    finally:
+        os.umask(old_umask)
+        MAX_BYTES = saved_max
+        if saved_env is None:
+            os.environ.pop("CRIB_LOG_SAVE_FRAMES", None)
+        else:
+            os.environ["CRIB_LOG_SAVE_FRAMES"] = saved_env
+
+
 def _self_check() -> None:
     global MAX_BYTES, _warned
     import contextlib
@@ -395,6 +490,7 @@ def _self_check() -> None:
                 assert read_rows(log)[-1]["frame"] is None
                 for junk in (None, "x", 3, {"scores": "bad", "face_down_parts": [1]}):
                     log_judgment(junk, "jev", "watch", img)
+            _check_permissions(verdict, img, tmp)
             # CLI on a log that does not exist yet
             os.environ["CRIB_SCORE_LOG"] = str(Path(tmp) / "none.jsonl")
             with contextlib.redirect_stderr(io.StringIO()):
