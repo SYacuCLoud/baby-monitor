@@ -42,10 +42,10 @@ WATCH_HINT = {
     "grab failed": "캠 화면을 못 받음. 전원, 와이파이, Tapo 앱을 확인하세요",
 }
 MODEL_HINT = "판정 모델 오류. llama-server나 Jev 서버, PC를 확인하세요"
-# Only used when live watch really runs on the remote (Colab) Jev (CRIB_JEV_REMOTE_LIVE=1).
+# Only used when live watch really runs on the remote Jev server (CRIB_JEV_REMOTE_LIVE=1).
 REMOTE_MODEL_HINT = (
-    "판정 불가: 원격 Jev(Colab)에 연결할 수 없거나 토큰이 거부됨. "
-    "아기를 직접 확인하고, Colab·터널·토큰이나 로컬 서버를 확인하세요"
+    "판정 불가: 원격 Jev 서버에 연결할 수 없거나 토큰이 거부됨. "
+    "아기를 직접 확인하고, 원격 서버·터널·토큰이나 로컬 서버를 확인하세요"
 )
 
 
