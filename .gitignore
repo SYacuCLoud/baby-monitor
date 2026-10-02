@@ -10,3 +10,5 @@ frames/
 .venv/
 baby-monitor-private/
 logs/
+crib_remote.env
+crib_remote.env.tmp

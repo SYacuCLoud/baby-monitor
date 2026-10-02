@@ -1,7 +1,10 @@
 """Crib rules as a local Jev systemone call. Not a medical device.
 
-Wire (loopback only): POST /v1/systemone, Jev body + top-level
+Wire: POST /v1/systemone, Jev body + top-level
 images=["data:image/jpeg;base64,..."] (imajev-2b/4b/9b playground server).
+Default: http loopback only. Opt-in remote mode (Jev on Google Colab behind an https tunnel):
+CRIB_JEV_URL=https://... + CRIB_JEV_TOKEN (see remote_settings.py). Remote needs https AND a token;
+live watch (live_context) always stays on the local server. Plain http to a non-loopback host is refused.
 The reply must echo usage.images with one entry, else the server ignored the
 photo (text-only Jev) and the verdict is dropped.
 
@@ -11,11 +14,18 @@ Jev does not write reason. Alert text falls back to the rule label.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 import http.client
+import socket
+import ssl
+import sys
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
+import remote_settings
 from qwen_client import _jpeg_b64, normalize
 
 DEFAULT_URL = "http://127.0.0.1:8090/v1/systemone"
@@ -206,16 +216,143 @@ def _read_json(resp, limit: int = 1_000_000) -> dict:
     return body
 
 
-def _post_json(url: str, payload: dict, timeout: int) -> dict:
-    headers = {"Content-Type": "application/json"}
+class RemoteJevError(RuntimeError):
+    """Remote Jev failed (network, TLS, HTTP, config). A plain Exception so the watch loop
+    reports it through its normal model-error path. The text never holds the URL or token."""
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    kind: str  # 'local' | 'remote'
+    host: str
+    port: int
+    path: str  # request path of /v1/systemone
+    token: str = ""
+
+    def __repr__(self) -> str:  # no token, masked host
+        where = remote_settings.mask_host(self.host) if self.kind == "remote" else f"{self.host}:{self.port}"
+        return f"Endpoint({self.kind}, {where})"
+
+
+_LIVE: contextvars.ContextVar[bool] = contextvars.ContextVar("crib_jev_live", default=False)
+_warned_live = False
+
+
+@contextlib.contextmanager
+def live_context():
+    """Mark calls inside as live monitoring (watch.py). Remote is used there only with CRIB_JEV_REMOTE_LIVE=1."""
+    tok = _LIVE.set(True)
+    try:
+        yield
+    finally:
+        _LIVE.reset(tok)
+
+
+def _local_endpoint(url: str) -> Endpoint:
+    url = assert_loopback(url)
+    parsed = urlparse(url)
+    return Endpoint("local", parsed.hostname, parsed.port or 80, parsed.path)
+
+
+def _remote_endpoint(s: "remote_settings.Settings") -> Endpoint:
+    try:
+        base = remote_settings.validate_url(s.url)
+        token = remote_settings.validate_token(s.token)
+    except remote_settings.SettingsError as e:
+        raise RemoteJevError("remote jev settings invalid: " + str(e)) from None
+    parsed = urlparse(base)
+    return Endpoint("remote", parsed.hostname, parsed.port or 443, "/v1/systemone", token)
+
+
+def endpoint_from_settings(s: "remote_settings.Settings") -> Endpoint:
+    """Endpoint for a Settings object (GUI connection test). Remote URL -> remote rules, else the local rules."""
+    if s.remote_url_configured:
+        return _remote_endpoint(s)
+    env_url = os.environ.get("CRIB_JEV_URL", "").strip()
+    local = urlparse(env_url)
+    return _local_endpoint(env_url if local.scheme == "http" and local.hostname in remote_settings.LOOPBACK else DEFAULT_URL)
+
+
+def resolve_endpoint(live: bool = False, environ=None) -> Endpoint:
+    """Pick where this call goes. Default (nothing configured) is exactly the old local behavior."""
+    global _warned_live
+    environ = os.environ if environ is None else environ
+    s = remote_settings.load(environ)
+    if not s.remote_url_configured:
+        # Legacy path: CRIB_JEV_URL (default DEFAULT_URL) must be http loopback /v1/systemone, else SystemExit.
+        return _local_endpoint(environ.get("CRIB_JEV_URL", DEFAULT_URL))
+    scheme = urlparse(s.url).scheme
+    if scheme != "https":
+        # http to a non-loopback host (or anything else odd) is refused, same as before.
+        return _local_endpoint(s.url)
+    if live:
+        # Live watch always stays on the local server. (The explicit live opt-in comes in its own commit.)
+        if not _warned_live:
+            _warned_live = True
+            print("[jev] remote configured but live watch stays local", file=sys.stderr, flush=True)
+        return _local_endpoint(DEFAULT_URL)
+    return _remote_endpoint(s)
+
+
+def _timeout_for(ep: Endpoint, timeout, environ=None):
+    if ep.kind != "remote":
+        return timeout
+    environ = os.environ if environ is None else environ
+    try:
+        custom = remote_settings.parse_timeout(remote_settings.load(environ).timeout)
+    except remote_settings.SettingsError as e:
+        raise RemoteJevError("remote jev settings invalid: " + str(e)) from None
+    return custom if custom is not None else timeout
+
+
+def _remote_error(exc: BaseException) -> RemoteJevError:
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        what = "timeout"
+    elif isinstance(exc, ssl.SSLError):
+        what = "tls error"
+    else:
+        what = "connection failed"
+    return RemoteJevError(f"remote jev {what}")
+
+
+def _exchange(ep: Endpoint, method: str, path: str, payload: dict | None, timeout) -> dict:
+    headers = {}
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+    if ep.kind == "remote":
+        headers["Authorization"] = "Bearer " + ep.token
+        headers["User-Agent"] = "crib-monitor"  # some CDNs reject requests with no User-Agent
+        # http.client never follows redirects, so a frame cannot bounce to another host.
+        conn = http.client.HTTPSConnection(ep.host, ep.port, timeout=timeout,
+                                           context=ssl.create_default_context())
+        try:
+            try:
+                conn.request(method, path, body, headers)
+                resp = conn.getresponse()
+                if resp.status != 200:
+                    resp.read(1024)
+                    hint = " (token rejected)" if resp.status in (401, 403) else ""
+                    raise RemoteJevError(f"remote jev HTTP {resp.status}{hint}; frame not resent")
+                return _read_json(resp)
+            except RemoteJevError:
+                raise
+            except ssl.SSLError as e:  # before ValueError: CertificateError is both, and its text names the host
+                raise _remote_error(e) from None
+            except ValueError:
+                raise  # bad JSON from the server: no host in the message
+            except Exception as e:  # OSError, ssl, http.client errors: their text can name the host
+                raise _remote_error(e) from None
+        finally:
+            conn.close()
     key = os.environ.get("CRIB_JEV_KEY", "").strip()
     if key:
         headers["Authorization"] = "Bearer " + key
     # http.client never follows redirects, so a frame cannot bounce to a cloud host.
-    parsed = urlparse(url)
-    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
+    conn = http.client.HTTPConnection(ep.host, ep.port, timeout=timeout)
     try:
-        conn.request("POST", parsed.path, json.dumps(payload).encode("utf-8"), headers)
+        conn.request(method, path, body, headers)
         resp = conn.getresponse()
         if resp.status != 200:
             raise RuntimeError(f"jev HTTP {resp.status} refused; frame not resent")
@@ -224,15 +361,30 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
         conn.close()
 
 
-def ask(image, timeout: int = 180) -> dict:
-    url = assert_loopback(os.environ.get("CRIB_JEV_URL", DEFAULT_URL))
+def get_models(ep: Endpoint, timeout: float = 15.0) -> str | None:
+    """GET /v1/models through the same client code. Returns the first model id, or None if not reported."""
+    out = _exchange(ep, "GET", "/v1/models", None, _timeout_for(ep, timeout))
+    items = out.get("data") if isinstance(out.get("data"), list) else out.get("models")
+    if isinstance(items, list) and items:
+        first = items[0]
+        name = first.get("id") or first.get("name") if isinstance(first, dict) else first
+        if isinstance(name, str) and name.strip():
+            return name.strip()[:80]
+    return None
+
+
+def ask(image, timeout: int = 180, live: bool | None = None) -> dict:
+    ep = resolve_endpoint(_LIVE.get() if live is None else live)
     model = os.environ.get("CRIB_JEV_MODEL", "jev-latest").strip() or "jev-latest"
-    out = _post_json(url, build_request(_jpeg_b64(image), model), timeout)
+    out = _exchange(ep, "POST", ep.path, build_request(_jpeg_b64(image), model), _timeout_for(ep, timeout))
     assert_saw_image(out)
     answers = out.get("answers")
     if not isinstance(answers, dict):
         raise ValueError("jev response missing answers")
-    return verdict_from_answers(answers)
+    got = verdict_from_answers(answers)
+    if ep.kind == "remote":
+        got["backend"] = "remote"  # only this marker goes to tick/score logs, never the URL
+    return got
 
 
 def _self_check() -> None:

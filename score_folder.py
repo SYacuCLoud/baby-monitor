@@ -1,7 +1,12 @@
 """Score a folder of photos with the running judge server. READ-ONLY measuring tool.
 
-Usage: python score_folder.py <folder> [--model jev|qwen] [--csv out.csv]
+Usage: python score_folder.py <folder> [--model jev|qwen] [--csv out.csv] [--remote]
        python score_folder.py --selftest
+
+--remote: send the photos to the remote Jev (Colab) configured in crib_remote.env or CRIB_JEV_URL +
+CRIB_JEV_TOKEN (https + token only). Photos leave this PC. Without --remote the crib_remote.env file is
+ignored (unless CRIB_JEV_BACKEND=remote is set in the environment) and nothing changes: local loopback Jev. (An explicit https CRIB_JEV_URL + CRIB_JEV_TOKEN in the
+environment is honored either way.)
 
 Uses the same call as the GUI single-photo test (crib_gui.py _run_test): the photo is opened with
 Image.open(path).convert("RGB") and judged with judge.ask under CRIB_MODEL=<model>. No HTTP code here.
@@ -168,7 +173,7 @@ def render_summary(rows: list[dict], current: float | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(folder: Path, model: str, csv_path: Path | None = None, ask_fn=None, out=None) -> int:
+def run(folder: Path, model: str, csv_path: Path | None = None, ask_fn=None, out=None, remote: bool = False) -> int:
     out = out or sys.stdout
     if not folder.is_dir():
         print(f"not a folder: {folder}", file=sys.stderr)
@@ -178,9 +183,32 @@ def run(folder: Path, model: str, csv_path: Path | None = None, ask_fn=None, out
         return 2
     current = None
     prev = os.environ.get("CRIB_MODEL")
+    prev_backend = os.environ.get("CRIB_JEV_BACKEND")
     os.environ["CRIB_MODEL"] = model  # same as the GUI test
+    if model == "jev":
+        # --remote: crib_remote.env counts. Default: the file is ignored (env CRIB_JEV_BACKEND wins only if given).
+        if remote:
+            os.environ["CRIB_JEV_BACKEND"] = "remote"
+        else:
+            os.environ.setdefault("CRIB_JEV_BACKEND", "local")
     try:
         if model == "jev":
+            from jev_protocol import resolve_endpoint
+
+            try:
+                ep = resolve_endpoint(live=False)
+            except SystemExit:
+                raise
+            except Exception as exc:  # RemoteJevError: settings invalid (no URL/token in the text)
+                print(f"remote settings: {exc}", file=sys.stderr)
+                return 2
+            if remote and ep.kind != "remote":
+                print("--remote needs https CRIB_JEV_URL + CRIB_JEV_TOKEN (env or crib_remote.env).", file=sys.stderr)
+                return 2
+            if ep.kind == "remote":
+                from remote_settings import mask_host
+
+                out.write(f"backend: remote ({mask_host(ep.host)}) - photos leave this PC\n")
             from jev_protocol import alert_at
 
             current = alert_at("face_down")  # SystemExit with a clear message on a bad env value
@@ -190,6 +218,10 @@ def run(folder: Path, model: str, csv_path: Path | None = None, ask_fn=None, out
             os.environ.pop("CRIB_MODEL", None)
         else:
             os.environ["CRIB_MODEL"] = prev
+        if prev_backend is None:
+            os.environ.pop("CRIB_JEV_BACKEND", None)
+        else:
+            os.environ["CRIB_JEV_BACKEND"] = prev_backend
     out.write(render_table(rows))
     errors = [r for r in rows if r["error"]]
     for r in errors:
@@ -358,6 +390,8 @@ def _main(argv: list[str]) -> int:
     ap.add_argument("folder", nargs="?", help="folder with photos, named like 엎드림_01.jpg or prone_01.jpg")
     ap.add_argument("--model", choices=("jev", "qwen"), default="jev")
     ap.add_argument("--csv", metavar="OUT.CSV", help="also write the table as CSV")
+    ap.add_argument("--remote", action="store_true",
+                    help="use the remote Jev (Colab) from crib_remote.env / env. Photos leave this PC")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:
@@ -369,7 +403,7 @@ def _main(argv: list[str]) -> int:
         sys.stdout.reconfigure(errors="replace")
     except Exception:
         pass
-    return run(Path(a.folder), a.model, Path(a.csv) if a.csv else None)
+    return run(Path(a.folder), a.model, Path(a.csv) if a.csv else None, remote=a.remote)
 
 
 if __name__ == "__main__":

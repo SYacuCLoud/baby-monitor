@@ -16,6 +16,7 @@ from PIL import Image
 from motion import changed_fraction, should_wake, to_gray
 from ntfy_alert import notify, notify_alert
 from judge import ask, model_kind
+import jev_protocol
 import score_log
 from score_log import log_judgment
 
@@ -224,7 +225,8 @@ def decide(
             "motion": False,
             "skipped": True,
         }, gray
-    result = ask(image)
+    with jev_protocol.live_context():  # live watch never uses the remote Jev unless the live opt-in is on
+        result = ask(image)
     log_judgment(result, model_kind(), "watch", image)  # never raises
     result["motion"] = motion
     result["skipped"] = False
