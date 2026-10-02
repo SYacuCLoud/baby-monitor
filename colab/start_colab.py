@@ -13,6 +13,11 @@ Steps follow what worked by hand on a Colab T4 (Python 3.13, transformers 5.17, 
   python scripts/download_model.py --model {2b|4b}; hf download mohit67890/imajev-{2b|4b} (no mlx/*);
   server started with subprocess.Popen from Python (a shell `nohup ... &` died when the cell ended);
   no --merge-lora (12 GB host RAM) and no --fast.
+Speed: without `flash-linear-attention` the Qwen3.5-style layers fall back to a pure PyTorch reference path and a
+request took 220-365 s on the T4 (4b, torch 2.11, transformers 5.17; server log total_ms). install() therefore also
+does a best-effort `pip install flash-linear-attention` (pure Python/Triton wheel; a failure only warns).
+causal-conv1d is NOT installed: PyPI has no prebuilt wheel for it and compiling takes long on Colab.
+The speedup from flash-linear-attention is NOT verified until it has run on Colab.
 The token is made here (secrets.token_urlsafe(32)), passed to the gateway through the environment (not argv),
 and printed only in the banner. Nothing is written to the repo.
 
@@ -67,6 +72,42 @@ def check_gpu() -> None:
         print("!! GPU가 보이지 않습니다. 런타임 > 런타임 유형 변경 > T4 GPU 를 고르세요.", flush=True)
 
 
+FAST_PATH_PIP = "flash-linear-attention"
+# Warning text printed by transformers when a fast kernel package is missing (seen in the server log).
+FALLBACK_RE = re.compile(r"(\w+) is falling back to its reference PyTorch implementation")
+
+
+def install_fast_path(run_cmd=subprocess.run) -> bool:
+    """Best effort: pip install flash-linear-attention. Never raises; a failure leaves the slow path working."""
+    cmd = [sys.executable, "-m", "pip", "install", "-q", "-U", FAST_PATH_PIP]
+    print("$", " ".join(cmd), flush=True)
+    try:
+        ok = run_cmd(cmd, check=False).returncode == 0
+    except Exception as exc:  # noqa: BLE001 - best effort by design
+        ok = False
+        print(f"({type(exc).__name__}: {exc})", flush=True)
+    if not ok:
+        print(f"!! {FAST_PATH_PIP} 설치에 실패했습니다. 계속 진행하지만 서버가 느린 경로(순수 PyTorch)로 돌아 "
+              "요청 1건에 수 분이 걸릴 수 있습니다 (실제 T4 실행에서 220~365초).", flush=True)
+    return ok
+
+
+def fallback_warnings(log_text: str) -> list[str]:
+    """Names of kernels the server log says it fell back on (e.g. causal_conv1d_fn). Sorted, unique."""
+    return sorted(set(FALLBACK_RE.findall(log_text or "")))
+
+
+def report_fallbacks(log: Path) -> list[str]:
+    try:
+        names = fallback_warnings(log.read_text(errors="replace"))
+    except OSError:
+        return []
+    if names:
+        print("!! 서버 로그에 느린 경로(fallback) 경고가 있습니다: " + ", ".join(names)
+              + ". 요청이 매우 느릴 수 있습니다 (연결 테스트의 응답 시간으로 확인하세요).", flush=True)
+    return names
+
+
 def install(model: str) -> None:
     """Clone imajev, install it, download the base model and the adapter. Safe to run again."""
     model = _check_model(model)
@@ -76,6 +117,7 @@ def install(model: str) -> None:
         run(["git", "clone", "--depth", "1", IMAJEV_URL, str(d)])
     run([sys.executable, "-m", "pip", "install", "-q", "-e", ".[serve,torch]"], cwd=d)
     run([sys.executable, "-m", "pip", "install", "-q", "-U", "torchao"])  # torchao 0.10 was incompatible
+    install_fast_path()  # best effort: failure only warns
     run([sys.executable, "scripts/download_model.py", "--model", model], cwd=d)
     adapter = d / "adapters" / f"imajev-{model}"
     if not (adapter / "calibration.json").is_file():
@@ -211,7 +253,8 @@ def banner(url: str, token: str, model: str) -> str:
         "    테스트와 점수 측정용으로 쓰고, 알림의 유일한 경로로 쓰지 마세요. 로컬 서버를 기본으로 두세요.",
         "  - 주소는 런타임/터널을 다시 켤 때마다 바뀌고, 토큰도 새로 만들어집니다.",
         "",
-        "속도: 4B는 요청 1건에 약 3초(T4, 워밍업 후), 첫 요청은 더 느립니다. 2B는 VRAM 약 4.6GB, 4B는 약 9.9GB.",
+        "속도: 빠른 경로 라이브러리(flash-linear-attention) 없이 T4에서 4B 요청 1건이 220~365초 걸린 적이 있습니다.",
+        "      서버 로그에 'falling back' 경고가 없는지 위 출력과 PC의 '연결 테스트' 응답 시간으로 확인하세요. 2B는 VRAM 약 4.6GB, 4B는 약 9.9GB.",
         "=" * 64,
     ])
 
@@ -229,6 +272,7 @@ def launch(model: str = "4b") -> dict:
         raise SystemExit("gateway 시작 실패: " + tail(WORK / "gateway.log"))
     tunnel, url = start_tunnel()
     wait_model_ready(server)
+    report_fallbacks(WORK / "imajev-server.log")
     # Through the public URL with the token (DNS for a new quick tunnel can take a few seconds).
     code = 0
     for _ in range(20):
@@ -316,6 +360,29 @@ def _selftest() -> None:
     argv_probe = [sys.executable, str(HERE / "gateway.py"), "--port", str(GATEWAY_PORT), "--backend-port", str(MODEL_PORT)]
     assert token not in " ".join(argv_probe + server_argv("4b"))
     assert len(token) >= 40
+    # fast path: best-effort install never raises and says so on failure
+    import contextlib
+    import io
+
+    class R:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    seen = []
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        assert install_fast_path(lambda cmd, check: (seen.append(cmd), R(0))[1]) is True
+    assert seen[0][-1] == "flash-linear-attention" and "!!" not in out.getvalue()
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        assert install_fast_path(lambda cmd, check: R(1)) is False
+        assert "!!" in out.getvalue() and "계속 진행" in out.getvalue()
+        def boom(cmd, check):
+            raise OSError("no pip")
+        assert install_fast_path(boom) is False
+    log = ("a causal_conv1d_fn is falling back to its reference PyTorch implementation x\n"
+           "chunk_gated_delta_rule is falling back to its reference PyTorch implementation\n"
+           "causal_conv1d_fn is falling back to its reference PyTorch implementation")
+    assert fallback_warnings(log) == ["causal_conv1d_fn", "chunk_gated_delta_rule"] and fallback_warnings("") == []
+    assert "220" in banner("https://a-b.trycloudflare.com", "t" * 43, "4b")
     print("ok start-colab")
 
 
