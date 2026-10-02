@@ -9,7 +9,7 @@
 
 - [하는 일](#하는-일) · [동작 방식](#동작-방식) · [검증 상태](#검증-상태)
 - [필요한 것](#필요한-것) · [설치와 실행](#설치와-실행)
-- [설정](#설정) · [판정 규칙](#판정-규칙) · [알림 동작](#알림-동작) · [점수 기록](#점수-기록) · [사진 폴더 점수 측정](#사진-폴더-점수-측정)
+- [설정](#설정) · [판정 규칙](#판정-규칙) · [알림 동작](#알림-동작) · [점수 기록](#점수-기록) · [사진 폴더 점수 측정](#사진-폴더-점수-측정) · [Colab에서 Jev 돌리기](#colab에서-jev-돌리기)
 - [파일 구조](#파일-구조) · [개인정보와 보안](#개인정보와-보안)
 - [한계와 알려진 문제](#한계와-알려진-문제) · [문제 해결](#문제-해결) · [License](#license)
 
@@ -60,6 +60,9 @@
 | 항목 | 상태 |
 | --- | --- |
 | `motion.py`, `qwen_client.py`, `jev_protocol.py`, `judge.py`, `score_log.py`, `watch.py`(인자 없이) 자체 검사 | 통과 (합성 데이터, 가짜 로컬 서버) |
+| `remote_settings.py`, `test_remote.py`, `test_remote_live.py`, `colab/gateway.py --selftest`, `colab/start_colab.py --selftest`, `colab/make_notebook.py --check` | 통과 (가짜 로컬 서버, 임시 인증서의 https 가짜 서버. `openssl` 명령이 없으면 https 부분은 건너뛰고 그렇게 출력) |
+| Colab 원격 Jev (`CRIB_JEV_URL`+`CRIB_JEV_TOKEN`), `colab/imajev_colab.ipynb`, 실제 Cloudflare 터널 | **검증 안 됨**. 각 단계(설치, 서버 실행, 요청 형식)는 작성 전에 Colab T4에서 손으로 따로 확인된 것이고, 노트북과 `start_colab.py`를 통째로 실행해 본 적은 없음 |
+| GUI의 'Jev 서버' 패널(tkinter 화면) | **검증 안 됨**. 이 PC에는 tkinter가 없어 화면을 띄워 보지 못함. 로직(`remote_settings.py`)은 시험했고 `crib_gui.py`는 `py_compile`과 가짜 tkinter 모듈로만 확인 |
 | `crib_gui.py --check` | 통과. tkinter가 있어야 실행됨 (확인할 때는 tkinter를 가짜 모듈로 대체) |
 | ntfy 전송 형식 (JSON, 제목 `아기`, 우선순위 5) | 로컬 가짜 서버로 확인. 실제 ntfy.sh 전달은 **검증 안 됨** |
 | 실제 모델(Jev·Qwen)의 규칙별 판정 정확도 | **검증 안 됨** (저장소에 실제 사진 테스트 없음) |
@@ -126,6 +129,12 @@ python jev_protocol.py
 python judge.py
 python score_log.py             # 임시 폴더에서만 돌고 실제 logs/는 건드리지 않음
 python score_folder.py --selftest   # 가짜 판정 함수와 임시 폴더만 씀
+python remote_settings.py
+python test_remote.py           # 원격 모드 규칙, 가짜 https 서버 (openssl 필요)
+python test_remote_live.py      # 실시간 감시 경로 (푸시는 가짜 함수로 대체, 실제 ntfy 안 씀)
+python colab/gateway.py --selftest
+python colab/start_colab.py --selftest
+python colab/make_notebook.py --check
 python watch.py
 python crib_gui.py --check
 python ntfy_alert.py            # ntfy.env가 없으면 만듦. 푸시는 안 보냄
@@ -185,7 +194,12 @@ python crib_gui.py
 | 이름 | 기본값 | 읽는 곳 | 의미 |
 | --- | --- | --- | --- |
 | `CRIB_MODEL` | `jev` | `judge.py` | 판정 모델. `jev` 또는 `qwen` (대소문자 무시, 빈 값이면 `jev`). 그 외는 종료 |
-| `CRIB_JEV_URL` | `http://127.0.0.1:8090/v1/systemone` | `jev_protocol.py` | Jev 서버 주소. `http`, loopback(`127.0.0.1`/`localhost`/`::1`), 인증 정보 없음, 경로 `/v1/systemone`만 허용. 아니면 종료 |
+| `CRIB_JEV_URL` | `http://127.0.0.1:8090/v1/systemone` | `jev_protocol.py` | Jev 서버 주소. 기본: `http`, loopback(`127.0.0.1`/`localhost`/`::1`), 인증 정보 없음, 경로 `/v1/systemone`만 허용. 아니면 종료. **원격(선택)**: `https://...` + `CRIB_JEV_TOKEN`이면 원격으로 인식 ([Colab에서 Jev 돌리기](#colab에서-jev-돌리기)). http 비-loopback은 계속 거부 |
+| `CRIB_JEV_TOKEN` | (없음) | `jev_protocol.py` | 원격 Jev용 토큰. 원격 주소에는 필수 (없으면 거부). `Authorization: Bearer`로 보냄. 로그·오류에 찍지 않음 |
+| `CRIB_JEV_TIMEOUT` | 호출하는 쪽 기본(180초) | `jev_protocol.py` | 원격 요청 한 건의 제한 시간(초, 0 초과 3600 이하). 로컬에는 적용 안 함 |
+| `CRIB_JEV_REMOTE_LIVE` | `0` | `jev_protocol.py`, `watch.py` | `1`이면 **실시간 감시(watch.py)도** 원격 Jev를 씀. 기본은 꺼짐: 원격이 설정돼 있어도 실시간 감시는 로컬 서버만 씀 |
+| `CRIB_JEV_BACKEND` | `local` | `remote_settings.py` | `remote`일 때만 `crib_remote.env` 파일 값을 읽음. 환경 변수로 `local`을 주면 파일을 무시 |
+| `CRIB_REMOTE_ENV` | `crib_remote.env` | `remote_settings.py` | 설정 파일 경로 바꾸기 (시험용) |
 | `CRIB_JEV_MODEL` | `jev-latest` | `jev_protocol.py` | 요청 본문의 `model` 값 |
 | `CRIB_JEV_KEY` | (없음) | `jev_protocol.py` | 설정하면 `Authorization: Bearer ...` 헤더를 붙임 |
 | `CRIB_JEV_ALERT_AT_FACE_COVER`, `CRIB_JEV_ALERT_AT_FACE_DOWN`, `CRIB_JEV_ALERT_AT_CLIMBING` | `0.60` | `jev_protocol.py` | 규칙별 알림 점수 기준 (Jev만). 0 초과 1 이하의 숫자, 비우면 0.60. 숫자가 아니거나 범위 밖이면 `SystemExit`로 종료. `empty`(0.30 미만 기준)와 표시용 0.50은 환경 변수로 못 바꿈 |
@@ -316,7 +330,7 @@ Qwen 경로에는 점수 임계값이 없고, `prompt.txt`의 규칙을 모델�
 
 - **누가 쓰나**: 감시 루프(`watch.py`, `source: watch`. `--image` 한 장도 포함)와 GUI의 파일·붙여넣기 테스트(`source: gui-test`). 움직임이 없어 건너뛴 틱과 모델 오류는 기록하지 않습니다.
 - **언제 쓰나**: 판정 직후에 씁니다. 쿨다운이나 `--send` 여부와 상관없습니다. `alert` 칸은 `should_alert` 값이지 푸시가 실제로 나갔다는 뜻이 아닙니다.
-- **한 줄의 내용**: `type`, 짧은 `id`(6자리 16진수), `time`(+09:00 같은 오프셋 포함), `source`, `model`, `scores`, `face_down_parts`(볼/등/배 원값), `thresholds`(Jev일 때 규칙별 기준), `alert`, `rule`, `reason`(300자까지), `image`(GUI 테스트의 파일 이름 또는 `clipboard`), `frame`(저장된 사진 파일 이름 또는 null). Qwen은 점수가 없어 `scores`가 비고 `thresholds`는 null입니다.
+- **한 줄의 내용**: `type`, 짧은 `id`(6자리 16진수), `time`(+09:00 같은 오프셋 포함), `source`, `model`, `scores`, `face_down_parts`(볼/등/배 원값), `thresholds`(Jev일 때 규칙별 기준), `alert`, `rule`, `reason`(300자까지), `image`(GUI 테스트의 파일 이름 또는 `clipboard`), `frame`(저장된 사진 파일 이름 또는 null). 원격 Jev로 판정한 행에만 `backend: "remote"`가 붙습니다 (`frames/ticks.jsonl`의 틱도 마찬가지). 주소와 토큰은 기록하지 않습니다. Qwen은 점수가 없어 `scores`가 비고 `thresholds`는 null입니다.
 - **회전**: 5MB를 넘으면 `scores.jsonl.1`, `.2`로 넘기고 최대 3개만 유지합니다.
 - **실패해도 판정은 계속**: 기록 실패는 판정을 막지 않고, 경고를 stderr에 한 번만 냅니다.
 - GUI의 "기록" 목록(`frames/ticks.jsonl`)과는 별개입니다.
@@ -369,6 +383,41 @@ python score_folder.py --selftest
 - 사진은 이 PC에만 있고 어디에도 올리거나 푸시하지 않습니다. 푸시 알림, `frames/`(ticks, status, latest.jpg), `logs/scores.jsonl` 모두 건드리지 않습니다. 파일을 쓰는 것은 `--csv`를 준 경우의 그 CSV 하나뿐입니다 (엑셀용 UTF-8 BOM).
 - 자체 검사는 가짜 판정 함수와 임시 폴더로 표, 요약, CSV, 5장 규칙을 확인한 것입니다. **실제 모델(Jev·Qwen)로 돌린 결과는 검증 안 됨**입니다.
 
+## Colab에서 Jev 돌리기
+
+**선택 기능이고 기본은 꺼져 있습니다.** 설정하지 않으면 지금까지처럼 이 PC의 `127.0.0.1:8090` Jev 서버만 씁니다. GPU가 없거나 로컬 서버를 못 켜는 날에 점수를 재 보거나 사진을 시험해 볼 때를 위한 것입니다.
+
+> **보안 경고**
+> - 원격을 쓰면 **아기 사진이 집 밖으로 나갑니다**: 공개 터널(Cloudflare quick tunnel) → Google Colab. 사진은 https로 가지만 Cloudflare와 Google을 거칩니다.
+> - 주소와 **토큰**이 있으면 누구든 그 Colab의 모델을 쓸 수 있습니다. 둘 다 비밀로 두세요. 토큰은 Colab이 켤 때마다 새로 만들고(`secrets.token_urlsafe(32)`), 서버 쪽 게이트웨이가 토큰 없는 요청은 401로 막습니다. 코드에는 토큰도 주소도 넣지 않습니다.
+> - 클라이언트는 **https + 토큰**이 모두 있을 때만 원격 주소를 받습니다. 토큰 없는 https, http 비-loopback은 거부합니다. 리다이렉트는 따라가지 않습니다. 토큰과 전체 주소는 오류 메시지·틱·점수 기록에 쓰지 않고, 호스트는 `***.trycloudflare.com`처럼 가려서 보여줍니다. 기록에는 `backend: remote`만 남습니다.
+
+### 쓰는 순서
+
+1. Colab에서 `colab/imajev_colab.ipynb`를 열고 런타임을 **T4 GPU**로 바꿉니다. 노트북은 이 저장소를 받아 `colab/start_colab.py`를 부릅니다 (저장소 머지 전에 시험하려면 설정 셀의 `BRANCH`를 바꾸세요).
+2. 설정 셀에서 `MODEL = '4b'`(업스트림 권장, VRAM 약 9.9GB, 따뜻할 때 요청당 약 3초) 또는 `'2b'`(약 4.6GB)를 고릅니다.
+3. 셀을 위에서부터 실행합니다: 설치와 모델 내려받기 → 서버·게이트웨이·터널 시작. 마지막에 한국어 안내 블록이 `CRIB_JEV_URL=...`, `CRIB_JEV_TOKEN=...` 두 줄을 보여줍니다. 상태 셀은 30초마다 한 줄을 찍고 터널이 죽으면 표시합니다.
+4. PC에서 둘 중 하나로 설정합니다.
+   - GUI: **Jev 서버** 칸에서 `원격(Colab)`을 고르고 주소와 토큰을 붙여 넣은 뒤 `저장`, `연결 테스트`. 모델 이름(`imajev-4b` 등)과 응답 시간이 나오면 성공입니다. 토큰은 `*`로 가려지고 `보이기`를 눌러야 보입니다. 저장 위치는 `crib_remote.env`(`.gitignore`, 권한 0600)입니다. 환경 변수(`CRIB_JEV_*`)가 파일보다 우선합니다.
+   - 환경 변수: `CRIB_JEV_URL`, `CRIB_JEV_TOKEN` (예시는 `crib_remote.env.example`).
+5. 사진 폴더 점수 측정: `python score_folder.py <폴더> --remote` (`--remote`가 없으면 파일 설정을 무시하고 로컬을 씁니다). GUI의 "사진 한 장 테스트"는 저장된 설정의 백엔드를 씁니다. 창에 어느 백엔드가 켜져 있는지(`로컬`/`원격`) 한 줄로 항상 표시됩니다.
+6. 다 쓰면 노트북의 마지막 셀로 끕니다.
+
+### 실시간 감시는 기본적으로 로컬입니다
+
+원격이 설정돼 있어도 **실시간 감시(`watch.py`, GUI의 감시 시작)는 로컬 서버만 씁니다.** 원격을 실시간 감시에도 쓰려면 따로 켜야 합니다: 환경 변수 `CRIB_JEV_REMOTE_LIVE=1` 또는 GUI의 `실시간 감시에도 원격 사용`(기본 꺼짐, 사진이 집 밖으로 나간다는 경고가 붙어 있음).
+
+켠 뒤에 원격이 응답하지 않거나(연결 실패, 시간 초과, 401, 설정 오류) 하면 **로컬로 몰래 바꾸지 않고, 안전하다는 가짜 점수도 만들지 않습니다.** 기존 모델 오류 경로(오류 틱 → `ErrorTracker`)를 그대로 타며, 연속 3번 실패하면 `판정 불가: 원격 Jev(Colab)에 연결할 수 없거나 토큰이 거부됨. 아기를 직접 확인하고, ...` 푸시가 나갑니다 (이후 30분마다 반복, 복구되면 복구 푸시 1번). 그래도 **무료 Colab은 알림의 유일한 경로로 쓰지 마세요.** 로컬 서버를 기본으로 두세요.
+
+### 한계
+
+- 무료 Colab 런타임은 놀고 있거나 시간이 지나면 끊깁니다. 끊기면 주소와 토큰이 모두 바뀌므로 PC 설정도 다시 해야 합니다.
+- 속도는 업스트림 수치(4B 약 3초/요청, 첫 요청은 더 느림)와 사용자가 손으로 확인한 값이며 이 저장소에서 측정하지 않았습니다. 인터넷 지연이 더해집니다. 감시 주기(15초) 안에 안 끝나면 그 판정은 늦어집니다. `CRIB_JEV_TIMEOUT`으로 요청 제한 시간을 줄일 수 있습니다 (기본 180초).
+- Cloudflare quick tunnel은 가동 시간 보장이 없는 시험용 서비스입니다.
+- 판정 규칙, 기준값(0.60 등), 질문은 로컬과 같습니다. 원격은 같은 모델을 다른 곳에서 돌릴 뿐이고, 같은 사진에서 점수가 로컬과 정확히 같은지는 **검증 안 됨**입니다.
+- **검증 안 됨**: 실제 Colab·Cloudflare 터널 end-to-end, 노트북 통째 실행, `start_colab.py`의 설치 단계(손으로 확인한 단계를 옮긴 것), tkinter GUI 화면, 실제 모델 정확도. 확인한 것은 가짜 서버를 쓴 자체 검사뿐입니다.
+- `imajev_serve.py --check`는 원격과 무관합니다 (로컬 모델을 직접 읽는 검사라 HTTP 클라이언트를 쓰지 않음). 바뀌지 않았습니다.
+
 ## 파일 구조
 
 | 파일 | 역할 |
@@ -384,7 +433,11 @@ python score_folder.py --selftest
 | `prompt.txt` | Qwen용 프롬프트 (Jev 경로는 쓰지 않음) |
 | `ntfy_alert.py` | ntfy 텍스트 푸시. 빈 메시지와 `\x00` 포함 메시지는 거부 |
 | `crib_gui.py` | Windows 창 (서버·감시 시작/중지, 미리보기, 기록, 트레이, 한 장 테스트, 점수와 엎드림 원값 표시) |
-| `ntfy.env.example`, `rtsp.env.example` | 설정 예시. 실제 `ntfy.env`, `rtsp.env`는 커밋 금지 |
+| `remote_settings.py` | 원격 Jev 설정 읽기·저장·검증·마스킹·연결 테스트 (tkinter 없음, 자체 검사 포함) |
+| `colab/gateway.py` | Colab용 토큰 검사 리버스 프록시 (표준 라이브러리, 자체 검사) |
+| `colab/start_colab.py`, `colab/make_notebook.py`, `colab/imajev_colab.ipynb` | Colab 실행 스크립트, 노트북 생성기와 노트북 |
+| `test_remote.py`, `test_remote_live.py` | 원격 모드 자체 검사 (가짜 서버) |
+| `ntfy.env.example`, `rtsp.env.example`, `crib_remote.env.example` | 설정 예시. 실제 `ntfy.env`, `rtsp.env`, `crib_remote.env`는 커밋 금지 |
 | `requirements.txt` | Python 의존성 (`Pillow`, `numpy`) |
 | `docs/architecture.html` | 파이프라인 도식. 일부 설명이 현재 코드와 다름 (움직임 비교가 "이전 프레임 대비"만으로 적혀 있고, `normalize`가 "얼굴 노출 시 알림 취소"를 한다고 적혀 있으나 코드에는 없음, 모델을 Qwen으로 표기) |
 | `SECURITY.md` | 비밀 정보 취급, 취약점 보고 |
@@ -401,10 +454,11 @@ python score_folder.py --selftest
 | `logs/scores.jsonl` (+ `.1`, `.2`) | 점수 기록 |
 | `logs/frames/*.jpg` | 사진 저장 옵션을 켠 경우에만 생기는 판정 사진 (아기 사진) |
 | `ntfy.env` | 로컬 ntfy 토픽 |
+| `crib_remote.env` | GUI의 'Jev 서버' 저장 파일. **원격 토큰이 들어 있음**. 커밋 금지(`.gitignore`), 권한 0600 (가능한 환경에서) |
 
 ## 개인정보와 보안
 
-- **프레임은 이 PC의 loopback(`127.0.0.1`) 서버로만 보냅니다.** Jev 클라이언트는 http loopback 외의 주소를 거부하고, 리다이렉트를 따라가지 않습니다 (`http.client` 사용). Qwen 주소는 `127.0.0.1:8080`으로 고정입니다. `api.typesafe.ai` 등 클라우드로 보내지 않습니다.
+- **기본값에서** 프레임은 이 PC의 loopback(`127.0.0.1`) 서버로만 보냅니다. (선택 기능인 원격 Jev를 켜면 달라집니다: [Colab에서 Jev 돌리기](#colab에서-jev-돌리기)) Jev 클라이언트는 http loopback 외의 주소를 거부하고, 리다이렉트를 따라가지 않습니다 (`http.client` 사용). Qwen 주소는 `127.0.0.1:8080`으로 고정입니다. `api.typesafe.ai` 등 클라우드로 보내지 않습니다.
 - **ntfy에는 사진이 없고 텍스트만 갑니다.** 다만 기본 서버가 `https://ntfy.sh`(외부 서비스)이므로, 규칙 문구와 Qwen이 쓴 `reason`(사진에 보이는 내용을 설명한 문장)은 그 서버를 거칩니다. 자체 서버를 쓰려면 `NTFY_SERVER`를 바꾸세요.
 - **ntfy 토픽은 사실상 비밀번호입니다.** 토픽만 알면 누구나 구독할 수 있고 인증 기능은 코드에 없습니다. 길고 무작위한 값을 쓰고 공유하지 마세요. 자동 생성 값은 `crib-` + 무작위 32자입니다. 의심되면 새 토픽으로 바꾸세요.
 - **이미지가 디스크에 남지 않는 것은 아닙니다.**
@@ -425,6 +479,7 @@ python score_folder.py --selftest
 - Jev 임계값(기본 0.60/0.30/0.50)은 보정된 값이 아닙니다 (코드 주석). Jev는 문장을 만들지 않으므로 `reason`이 비고, 푸시에는 규칙 문구만 갑니다 (`face_cover`/`face_down`인데 아기가 안 보이면 "아기가 안 보임"이 붙음).
 - 움직임이 없으면 모델을 부르지 않습니다. 변화가 임계값(2%) 미만이어도 60초마다는 판정하므로, 그 사이의 변화는 최대 60초 늦게 알 수 있습니다. 판정 자체의 시간은 이 README에서 주장하지 않습니다.
 - 알림 쿨다운은 메모리에만 있어 재시작하면 초기화됩니다. 알림이 계속될 때는 같은 규칙으로 10분마다 다시 갑니다.
+- 원격 Jev를 실시간 감시에 쓰면(`CRIB_JEV_REMOTE_LIVE=1`) 원격 설정 오류(토큰 없음 등)도 오류 틱과 `판정 불가` 푸시로 처리됩니다 (종료하지 않음). 로컬 설정 오류는 아래대로 종료합니다.
 - 캡처·이미지 읽기·모델 호출 중 일반 예외는 오류 틱으로 기록하고 루프를 계속 돌지만, 설정 오류(`CRIB_MODEL`이 잘못됨, `CRIB_JEV_URL`이 loopback이 아님, `CRIB_JEV_ALERT_AT_<RULE>`가 범위 밖)는 `SystemExit`라서 감시 프로세스가 종료됩니다.
 - 기본 경로(`D:\Dev\...`, `C:\_AX\...`)가 작성자 PC 기준이라 다른 PC에서는 환경 변수(`IMAJEV_DIR`, `IMAJEV_MODELS`, `IMAJEV_PY`, `LLAMA_SERVER`, `QWEN_DIR`, `IMAJEV_CHECK_FRAME`)로 바꿔야 합니다. 서버 포트(8090/8080)는 GUI에 고정입니다. GUI는 Windows 전용이고, 한 번에 한 모델 서버만 켜도록 막혀 있습니다.
 - ntfy 인증, 사진 첨부, 사진 보관 기능은 없습니다.
@@ -443,7 +498,8 @@ python score_folder.py --selftest
 | `reason: ConnectionRefusedError` | 모델 서버가 꺼져 있음 (Jev 8090 / Qwen 8080) |
 | `qwen HTTP N`, `jev HTTP N refused` | 서버가 200이 아닌 응답. 서버 로그 확인 (GUI는 `frames/gui-*.log`) |
 | `jev server did not read the frame; verdict dropped` | Jev 서버가 이미지를 못 읽음 (텍스트 전용 서버). 이미지를 받는 imajev playground 서버인지 확인 |
-| `jev url must be http loopback...` | `CRIB_JEV_URL`이 `http://127.0.0.1:포트/v1/systemone` 형태인지 확인 |
+| `jev url must be http loopback...` | `CRIB_JEV_URL`이 `http://127.0.0.1:포트/v1/systemone` 형태인지 확인. 원격이면 `https://`로 시작하고 `CRIB_JEV_TOKEN`도 있어야 함 |
+| `RemoteJevError: remote jev connection failed / timeout / tls error / HTTP 401` | 원격 Jev 문제. Colab이 꺼졌는지, 터널 주소가 바뀌었는지(다시 켤 때마다 바뀜), 토큰이 맞는지 확인. GUI '연결 테스트'로 확인. 실시간 감시에서는 이 오류가 반복되면 `판정 불가` 푸시가 감 |
 | `CRIB_MODEL must be qwen or jev` | `CRIB_MODEL` 값 수정 또는 삭제 (삭제하면 `jev`) |
 | `ValueError: invalid literal for int()` | `WATCH_HEARTBEAT_SEC`가 정수가 아님 |
 | `CRIB_JEV_ALERT_AT_... must be in (0, 1]` | 기준 값을 0 초과 1 이하 숫자로 (비우면 기본 0.60) |
