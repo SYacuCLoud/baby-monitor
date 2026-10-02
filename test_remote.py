@@ -169,24 +169,47 @@ def rules_without_network(tmp: Path) -> None:
             except J.RemoteJevError as e:
                 assert not isinstance(e, SystemExit) and "invalid" in str(e)
                 leak_free(e, "abc-def")
-        # plain http to a non-loopback host is refused (also with a token)
-        for url in ("http://abc-def.invalid/v1/systemone", "http://8.8.8.8", "http://abc-def.invalid"):
+        # plain http to anything but localhost / a private-network IP is refused (also with a token)
+        for url in ("http://abc-def.invalid/v1/systemone", "http://8.8.8.8", "http://abc-def.invalid",
+                    "http://localhost.evil.com:8090", "http://192.168.1.1.evil.com", "http://10.evil.com",
+                    "http://user@evil.com@192.168.1.1/", "http://100.64.0.1"):
             with env(CRIB_JEV_URL=url, CRIB_JEV_TOKEN=TOKEN):
                 try:
                     J.resolve_endpoint()
                     raise SystemExit(f"accepted {url}")
-                except SystemExit as e:
-                    assert "accepted" not in str(e)
-                    assert TOKEN not in str(e) and "abc-def" not in str(e)
+                except J.RemoteJevError as e:
+                    assert not isinstance(e, SystemExit) and TOKEN not in str(e)
+                    leak_free(e, "abc-def", "evil", "8.8.8.8", "192.168", "100.64", TOKEN)
         # bad remote urls
-        for url in ("https://u:p@abc.example.com", "https://abc.example.com/other", "https://abc.example.com/?a=1"):
+        for url in ("https://u:p@abc.example.com", "https://abc.example.com/a/../b", "https://abc.example.com/?a=1",
+                    "https://abc.example.com/a%2fb", "https://abc.example.com:0"):
             with env(CRIB_JEV_URL=url, CRIB_JEV_TOKEN=TOKEN):
                 try:
                     J.resolve_endpoint()
                     raise SystemExit(f"accepted {url}")
                 except J.RemoteJevError as e:
                     leak_free(e, "abc.example", "u:p", TOKEN)
-        # a token in the env with a loopback http url changes nothing: still local, no token sent
+        # any path is accepted; https always needs a token
+        with env(CRIB_JEV_URL="https://abc.example.com/api/jev/systemone", CRIB_JEV_TOKEN=TOKEN):
+            ep = J.resolve_endpoint()
+            assert (ep.kind, ep.scheme, ep.port, ep.path, ep.token) == ("remote", "https", 443, "/api/jev/systemone", TOKEN)
+            assert J.models_path(ep) == "/api/jev/models" and TOKEN not in repr(ep) and "abc" not in repr(ep)
+        with env(CRIB_JEV_URL="https://abc.example.com/x", CRIB_JEV_TOKEN=None):
+            try:
+                J.resolve_endpoint()
+                raise SystemExit("https custom path without token accepted")
+            except J.RemoteJevError:
+                pass
+        # localhost / private network: http and no token are fine; a given token is still sent
+        for url, host in (("http://localhost:9000/api", "localhost"), ("http://192.168.1.20:9000", "192.168.1.20"),
+                          ("http://[::1]:9000/a/b", "::1"), ("http://10.0.0.5/v1/systemone", "10.0.0.5"),
+                          ("https://192.168.1.20", "192.168.1.20")):
+            with env(CRIB_JEV_URL=url, CRIB_JEV_TOKEN=None):
+                ep = J.resolve_endpoint()
+                assert ep.kind == "remote" and ep.host == host and ep.token == "", url
+            with env(CRIB_JEV_URL=url, CRIB_JEV_TOKEN=TOKEN):
+                assert J.resolve_endpoint().token == TOKEN
+        # a token in the env with the plain legacy local url changes nothing: still local, no token sent
         with env(CRIB_JEV_URL="http://127.0.0.1:8090/v1/systemone", CRIB_JEV_TOKEN=TOKEN):
             ep = J.resolve_endpoint()
             assert ep.kind == "local" and ep.token == ""
@@ -281,14 +304,14 @@ def tls_cases(tmp: Path, certs) -> None:
                 except J.RemoteJevError as e:
                     assert "tls" in str(e)
                     leak_free(e, TOKEN, "localhost")
-            # the same stub over plain http must be refused client-side (no request sent)
+            # plain http to a non-local name must be refused client-side (no request sent)
             n = len(stub.seen)
-            with env(CRIB_JEV_URL=f"http://localhost:{stub.port}"):
+            with env(CRIB_JEV_URL=f"http://localhost.evil.com:{stub.port}"):
                 try:
                     J.ask(img, timeout=5)
                     raise SystemExit("http remote accepted")
-                except SystemExit as e:
-                    assert "accepted" not in str(e)
+                except J.RemoteJevError as e:
+                    leak_free(e, "evil", TOKEN)
             assert len(stub.seen) == n
     finally:
         stub.close()

@@ -1,4 +1,4 @@
-"""Remote Jev (Google Colab) settings: load / save / validate / mask. Pure stdlib, no tkinter.
+"""Remote Jev server settings: load / save / validate / mask. Pure stdlib, no tkinter.
 
 Remote mode is OPT IN. Nothing here changes the default (local loopback Jev only).
 
@@ -7,8 +7,13 @@ best effort). Env overrides the file. The file only counts when its CRIB_JEV_BAC
 (or env CRIB_JEV_BACKEND=remote); env CRIB_JEV_BACKEND=local ignores the file.
 
   CRIB_JEV_BACKEND      local (default) | remote
-  CRIB_JEV_URL          https://xxxx.trycloudflare.com   (https only, no credentials)
-  CRIB_JEV_TOKEN        bearer token printed by the Colab notebook
+  CRIB_JEV_URL          address of any Jev-compatible web API, with or without a path
+                        (default path /v1/systemone). No credentials, ?, # or ; in it.
+                          localhost / private network (10.x, 172.16-31.x, 192.168.x, fe80::, fc00::/7):
+                            http or https, token optional
+                          anything else (every host NAME except 'localhost', public IPs):
+                            https AND a token are required
+  CRIB_JEV_TOKEN        bearer token, sent only in the Authorization header. Colab prints one.
   CRIB_JEV_TIMEOUT      seconds per request (remote only), default = caller's timeout (180)
   CRIB_JEV_REMOTE_LIVE  1 = live watch may use remote too. Default 0: live watch stays local.
 
@@ -18,6 +23,7 @@ Self-test: python remote_settings.py
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import time
@@ -29,6 +35,10 @@ DIR = Path(__file__).resolve().parent
 ENV_FILE = DIR / "crib_remote.env"
 KEYS = ("CRIB_JEV_BACKEND", "CRIB_JEV_URL", "CRIB_JEV_TOKEN", "CRIB_JEV_TIMEOUT", "CRIB_JEV_REMOTE_LIVE")
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+DEFAULT_PATH = "/v1/systemone"
+_PRIVATE_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"))
+_PATH_RE = re.compile(r"^/[A-Za-z0-9._~:+/-]*$")
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _TOKEN_RE = re.compile(r"^[\x21-\x7e]{1,512}$")  # printable ASCII, no spaces: safe as a header value
 MAX_TIMEOUT = 3600.0
@@ -65,7 +75,12 @@ def parse_env(path: Path) -> dict[str, str]:
 def mask_host(url_or_host: str) -> str:
     """'abc-def.trycloudflare.com' -> '***.trycloudflare.com'. Never returns the full host."""
     raw = (url_or_host or "").strip()
-    host = (urlparse(raw).hostname if "://" in raw else raw.split("/")[0].split(":")[0]) or ""
+    try:
+        host = (urlparse(raw).hostname if "://" in raw else raw.split("/")[0].split(":")[0]) or ""
+    except ValueError:
+        return "***"
+    if _ip_literal(host) is not None:  # an IP address has no domain part that is safe to show
+        return "***(IP 주소)"
     labels = [p for p in host.lower().split(".") if p]
     if len(labels) >= 3:
         return "***." + ".".join(labels[-2:])
@@ -78,42 +93,124 @@ def is_loopback_host(host: str | None) -> bool:
     return (host or "").lower() in LOOPBACK
 
 
+def _ip_literal(host: str):
+    """IPv4/IPv6 address object for a literal (brackets and zone ids not allowed), else None.
+    Only the strict dotted form counts: '127.1' and '0x7f.1' are NOT literals, so they are host names."""
+    h = (host or "").strip()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    if "%" in h:
+        return None
+    try:
+        return ipaddress.ip_address(h)
+    except ValueError:
+        return None
+
+
+def host_scope(host: str | None) -> str:
+    """'loopback' | 'private' | 'public'. Only the literal name 'localhost' and real IP literals can be
+    loopback or private; every other host name ('localhost.evil.com', '10.evil.com', 'nas.local') is public."""
+    h = (host or "").strip().lower()
+    if h == "localhost":
+        return "loopback"
+    ip = _ip_literal(h)
+    if ip is None:
+        return "public"
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped  # ::ffff:10.0.0.1 is judged as 10.0.0.1
+    if ip.is_loopback:
+        return "loopback"
+    if any(ip in net for net in _PRIVATE_NETS if net.version == ip.version):
+        return "private"
+    return "public"
+
+
+@dataclass(frozen=True)
+class ParsedUrl:
+    scheme: str   # 'http' | 'https'
+    host: str     # lowercase, no brackets
+    port: int
+    path: str     # always starts with '/', no trailing '/'
+
+    @property
+    def scope(self) -> str:
+        return host_scope(self.host)
+
+    @property
+    def token_required(self) -> bool:
+        return self.scope == "public"
+
+
 def is_remote_url(url: str) -> bool:
-    """True for anything that is not an http loopback URL (those stay on the legacy local path)."""
-    p = urlparse((url or "").strip())
-    return not (p.scheme == "http" and is_loopback_host(p.hostname))
+    """True unless it is the plain legacy local form: http, loopback host, path /v1/systemone.
+    (Legacy local keeps its old behaviour: no token, CRIB_JEV_KEY, and strict refusals.)"""
+    try:
+        p = urlparse((url or "").strip())
+        return not (p.scheme == "http" and is_loopback_host(p.hostname) and p.path.rstrip("/") == DEFAULT_PATH)
+    except ValueError:
+        return True
 
 
-def validate_url(url: str) -> str:
-    """Return the normalized base 'https://host[:port]'. Raise SettingsError otherwise."""
+def parse_url(url: str) -> ParsedUrl:
+    """Validate a Jev server address. Raises SettingsError (message never contains the address)."""
     raw = (url or "").strip()
     if not raw:
-        raise SettingsError("원격 주소가 비어 있습니다.")
+        raise SettingsError("서버 주소가 비어 있습니다.")
+    if any(ord(c) <= 0x20 or ord(c) >= 0x7F or c in "\\%" for c in raw):
+        raise SettingsError("서버 주소에 공백, 제어문자, 한글, %, 역슬래시를 넣을 수 없습니다.")
     try:
         p = urlparse(raw)
         port = p.port
+        host = (p.hostname or "").lower()
     except ValueError:
-        raise SettingsError("원격 주소 형식이 올바르지 않습니다.") from None
-    if p.scheme != "https":
-        raise SettingsError("원격 주소는 https만 허용합니다 (http는 거부).")
-    if not p.hostname:
-        raise SettingsError("원격 주소에 호스트가 없습니다.")
-    if p.username or p.password:
-        raise SettingsError("원격 주소에 아이디/비밀번호를 넣지 마세요. 토큰은 따로 입력합니다.")
-    if p.query or p.fragment or p.params:
-        raise SettingsError("원격 주소에 ?, #, ; 부분을 넣지 마세요.")
-    if p.path.rstrip("/") not in ("", "/v1/systemone"):
-        raise SettingsError("원격 주소는 https://호스트 형태의 기본 주소여야 합니다 (경로 없음).")
-    host = p.hostname.lower()
-    if ":" in host:
-        host = f"[{host}]"
-    return f"https://{host}" + (f":{port}" if port else "")
+        raise SettingsError("서버 주소 형식이 올바르지 않습니다.") from None
+    if p.scheme not in ("http", "https"):
+        raise SettingsError("서버 주소는 http:// 또는 https://로 시작해야 합니다.")
+    if not host or not p.netloc:
+        raise SettingsError("서버 주소에 호스트가 없습니다.")
+    if "@" in p.netloc or p.username or p.password:
+        raise SettingsError("서버 주소에 아이디/비밀번호(@)를 넣지 마세요. 토큰은 따로 입력합니다.")
+    if p.query or p.fragment or p.params or "?" in raw or "#" in raw or ";" in raw:
+        raise SettingsError("서버 주소에 ?, #, ; 부분을 넣지 마세요.")
+    if port == 0:
+        raise SettingsError("서버 주소의 포트가 올바르지 않습니다.")
+    path = p.path.rstrip("/")
+    if path:
+        segs = path.split("/")[1:]
+        if (not _PATH_RE.match(path) or len(path) > 200 or any(sg in ("", ".", "..") for sg in segs)):
+            raise SettingsError("서버 주소의 경로가 올바르지 않습니다 (영문, 숫자, . _ ~ : + - / 만, .. 불가).")
+    else:
+        path = DEFAULT_PATH
+    if p.scheme == "http" and host_scope(host) == "public":
+        raise SettingsError(
+            "http는 이 PC(localhost)나 같은 네트워크의 사설 IP 주소에서만 허용합니다. "
+            "그 밖의 주소는 https와 토큰이 필요합니다.")
+    return ParsedUrl(p.scheme, host, port or (443 if p.scheme == "https" else 80), path)
 
 
-def validate_token(token: str) -> str:
+def validate_url(url: str) -> str:
+    """Return the normalized address 'scheme://host[:port][path]' (default path is left out)."""
+    u = parse_url(url)
+    host = f"[{u.host}]" if ":" in u.host else u.host
+    default_port = 443 if u.scheme == "https" else 80
+    return (f"{u.scheme}://{host}" + (f":{u.port}" if u.port != default_port else "")
+            + ("" if u.path == DEFAULT_PATH else u.path))
+
+
+def url_scope(url: str) -> str:
+    """Scope of a configured address; anything unparsable counts as 'public' (the careful answer)."""
+    try:
+        return parse_url(url).scope
+    except SettingsError:
+        return "public"
+
+
+def validate_token(token: str, required: bool = True) -> str:
     tok = (token or "").strip()
     if not tok:
-        raise SettingsError("토큰이 비어 있습니다. 원격은 토큰이 있어야 합니다.")
+        if required:
+            raise SettingsError("토큰이 비어 있습니다. 이 주소는 https와 토큰이 필요합니다.")
+        return ""
     if not _TOKEN_RE.match(tok):
         raise SettingsError("토큰에 공백이나 보이지 않는 문자가 있습니다.")
     return tok
@@ -184,7 +281,9 @@ def load(environ=None, path: Path | None = None) -> Settings:
 def validate(s: Settings) -> Settings:
     """Check a remote Settings. Returns it with a normalized url. Raises SettingsError."""
     parse_timeout(s.timeout)
-    return Settings(s.backend, validate_url(s.url), validate_token(s.token), s.timeout.strip(), s.remote_live)
+    u = parse_url(s.url)
+    return Settings(s.backend, validate_url(s.url), validate_token(s.token, u.token_required),
+                    s.timeout.strip(), s.remote_live)
 
 
 def settings_from_form(backend: str, url: str, token: str, timeout: str = "", live: bool = False) -> Settings:
@@ -215,9 +314,13 @@ def status_line(settings: Settings, kind: str = "jev") -> str:
             return "판정 백엔드: 로컬 (원격으로 선택했지만 주소가 없음 → 로컬 사용)"
         return "판정 백엔드: 로컬 (127.0.0.1)"
     host = mask_host(settings.url)
+    scope = url_scope(settings.url)
+    where = {"public": "사진이 집 밖으로 나갑니다",
+             "private": "사진이 같은 네트워크의 다른 기기로 나갑니다",
+             "loopback": "사진은 이 PC 안의 다른 서버로 갑니다"}[scope]
     if settings.remote_live:
-        return f"판정 백엔드: 원격 ({host}) — 실시간 감시·사진 테스트 모두 원격. 사진이 집 밖으로 나갑니다"
-    return f"판정 백엔드: 원격 ({host}) — 사진 테스트/점수 측정만. 실시간 감시는 로컬"
+        return f"판정 백엔드: 원격 서버 ({host}) — 실시간 감시·사진 테스트 모두 원격. {where}"
+    return f"판정 백엔드: 원격 서버 ({host}) — 사진 테스트/점수 측정만. 실시간 감시는 로컬"
 
 
 def render_file(s: Settings) -> str:
@@ -225,7 +328,7 @@ def render_file(s: Settings) -> str:
         if "\n" in v or "\r" in v:
             raise SettingsError("줄바꿈은 넣을 수 없습니다.")
     lines = [
-        "# Local only. Do not commit (gitignored). Holds the Colab token: keep it private.",
+        "# Local only. Do not commit (gitignored). Holds the server token: keep it private.",
         f"CRIB_JEV_BACKEND={s.backend}",
         f"CRIB_JEV_URL={s.url}",
         f"CRIB_JEV_TOKEN={s.token}",
@@ -244,7 +347,7 @@ def save(s: Settings, path: Path | None = None) -> Path:
     if s.backend == "remote":
         # Remote selected: everything must be valid, nothing invalid is written.
         parse_timeout(s.timeout)
-        s = Settings("remote", validate_url(s.url), validate_token(s.token), s.timeout, s.remote_live)
+        s = validate(s)
     text = render_file(s)
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -276,13 +379,13 @@ def korean_error(exc: BaseException) -> str:
     if "HTTP 404" in msg:
         return "서버는 응답했지만 이 경로를 모릅니다 (404). 주소를 확인하세요."
     if "HTTP 5" in msg:
-        return "서버나 터널이 응답하지 않습니다 (5xx). Colab이 꺼졌거나 터널이 끊겼을 수 있습니다."
+        return "서버나 터널이 응답하지 않습니다 (5xx). 서버가 꺼졌거나 터널/프록시가 끊겼을 수 있습니다."
     if "timeout" in msg:
-        return "시간 초과. Colab이 꺼졌거나 느립니다."
+        return "시간 초과. 서버가 꺼졌거나 느립니다."
     if "tls" in msg:
-        return "TLS(https) 연결 오류. 주소를 확인하세요."
+        return "TLS(https) 연결 오류. 주소와 인증서를 확인하세요."
     if "connection failed" in msg:
-        return "연결하지 못했습니다. 주소가 맞는지, Colab 터널이 살아 있는지 확인하세요."
+        return "연결하지 못했습니다. 주소가 맞는지, 서버(또는 터널)가 살아 있는지 확인하세요."
     return f"연결 테스트 실패 ({type(exc).__name__})"
 
 
@@ -303,7 +406,7 @@ def test_connection(settings: Settings, timeout: float = 15.0) -> dict:
                 "message": "주소가 허용되지 않습니다: " + str(e)[:120]}
     except Exception as e:
         return {"ok": False, "backend": backend, "model": None, "ms": None, "message": korean_error(e)}
-    label = "원격" if backend == "remote" else "로컬"
+    label = "원격 서버" if backend == "remote" else "로컬"
     name = model or "모델 이름 모름"
     return {"ok": True, "backend": backend, "model": model, "ms": ms,
             "message": f"OK ({label}) 모델: {name}, 응답 {ms} ms"}
@@ -317,9 +420,17 @@ def _self_check() -> None:
     assert validate_url("https://abc-def.trycloudflare.com") == "https://abc-def.trycloudflare.com"
     assert validate_url(" https://Abc.example.com:8443/ ") == "https://abc.example.com:8443"
     assert validate_url("https://abc.example.com/v1/systemone/") == "https://abc.example.com"
-    for bad in ("", "http://abc.trycloudflare.com", "http://127.0.0.1:8090", "ftp://x.y", "https://",
-                "https://u:p@abc.example.com", "https://abc.example.com/other",
-                "https://abc.example.com/?x=1", "https://abc.example.com:99999", "abc.example.com"):
+    # any path is fine; http only for localhost / private network
+    assert validate_url("https://api.example.com/jev/v2/systemone") == "https://api.example.com/jev/v2/systemone"
+    assert validate_url("http://127.0.0.1:8090") == "http://127.0.0.1:8090"
+    assert validate_url("http://192.168.1.20:9000/x") == "http://192.168.1.20:9000/x"
+    assert validate_url("http://[::1]:8090/") == "http://[::1]:8090"
+    for bad in ("", "http://abc.trycloudflare.com", "http://8.8.8.8", "http://localhost.evil.com",
+                "http://192.168.1.1.evil.com", "http://10.evil.com", "http://user@evil.com@192.168.1.1/",
+                "ftp://x.y", "https://", "https://u:p@abc.example.com", "https://abc.example.com/a/../b",
+                "https://abc.example.com//x", "https://abc.example.com/a b", "https://abc.example.com/%2e%2e",
+                "https://abc.example.com/?x=1", "https://abc.example.com/#f", "https://abc.example.com/a;b",
+                "https://abc.example.com:99999", "https://abc.example.com:0", "abc.example.com"):
         try:
             validate_url(bad)
             raise SystemExit(f"accepted url {bad!r}")
@@ -333,6 +444,24 @@ def _self_check() -> None:
             raise SystemExit(f"accepted token {bad!r}")
         except SettingsError:
             pass
+    assert validate_token("", required=False) == ""
+    try:
+        validate_token("", required=True)
+        raise SystemExit("empty token accepted")
+    except SettingsError:
+        pass
+    # host scope: IP literals only, names never count as local
+    for h, want in (("localhost", "loopback"), ("LOCALHOST", "loopback"), ("127.0.0.1", "loopback"),
+                    ("127.9.9.9", "loopback"), ("::1", "loopback"), ("[::1]", "loopback"),
+                    ("::ffff:127.0.0.1", "loopback"), ("10.0.0.5", "private"), ("172.16.0.1", "private"),
+                    ("172.31.255.255", "private"), ("192.168.1.1", "private"), ("169.254.1.1", "private"),
+                    ("fe80::1", "private"), ("fd00::1", "private"), ("::ffff:10.0.0.1", "private"),
+                    ("::ffff:8.8.8.8", "public"), ("172.32.0.1", "public"), ("172.15.0.1", "public"),
+                    ("100.64.0.1", "public"), ("8.8.8.8", "public"), ("0.0.0.0", "public"),
+                    ("localhost.evil.com", "public"), ("localhost.", "public"), ("192.168.1.1.evil.com", "public"),
+                    ("10.evil.com", "public"), ("nas.local", "public"), ("127.1", "public"), ("0x7f.1", "public"),
+                    ("2130706433", "public"), ("fe80::1%eth0", "public"), ("", "public"), ("example.com", "public")):
+        assert host_scope(h) == want, (h, host_scope(h), want)
     # timeout
     assert parse_timeout("") is None and parse_timeout("12.5") == 12.5
     for bad in ("0", "-1", "nan", "abc", "99999"):
@@ -344,6 +473,9 @@ def _self_check() -> None:
     # mask
     assert mask_host("https://abc-def.trycloudflare.com/x") == "***.trycloudflare.com"
     assert mask_host("https://example.com") == "***.com" and mask_host("") == "***"
+    for ip_url in ("http://192.168.10.77:9000/x", "192.168.10.77", "http://[fd00::5]/", "10.1.2.3:8090"):
+        m = mask_host(ip_url)
+        assert "192" not in m and "77" not in m and "fd00" not in m and "10.1" not in m and "(IP" in m, m
     assert "abc-def" not in mask_host("abc-def.trycloudflare.com:443")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -376,11 +508,19 @@ def _self_check() -> None:
         # env only (no file): https url + token is enough, as documented
         e = load({"CRIB_JEV_URL": "https://x.example.com", "CRIB_JEV_TOKEN": "t0kentoken"}, Path(tmp) / "none")
         assert e.remote_url_configured and e.backend == "local"
-        # a local loopback CRIB_JEV_URL in the environment is not "remote"
+        # the plain legacy local form (http loopback /v1/systemone) in the environment is not "remote"
         assert not load({"CRIB_JEV_URL": "http://127.0.0.1:8090/v1/systemone"}, Path(tmp) / "none").remote_url_configured
+        # a loopback / private address with its own path is a web API server (remote path), token optional
+        assert load({"CRIB_JEV_URL": "http://127.0.0.1:9000/api/systemone"}, Path(tmp) / "none").remote_url_configured
+        lan = Settings("remote", "http://192.168.1.20:9000", "", "", True)
+        assert validate(lan) == lan and "같은 네트워크" in status_line(lan) and "192" not in status_line(lan)
+        save(lan, path)
+        assert load({}, path) == lan
+        save(want, path)
         # invalid saves are refused and write nothing
         before = path.read_text(encoding="utf-8")
         for bad in (Settings("remote", "http://abc.example.com", secret), Settings("remote", want.url, ""),
+                    Settings("remote", "https://abc.example.com/x", ""), Settings("remote", "http://8.8.8.8", secret),
                     Settings("remote", want.url, secret, "abc"), Settings("cloud", "", "")):
             try:
                 save(bad, path)

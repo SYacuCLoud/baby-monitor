@@ -2,9 +2,11 @@
 
 Wire: POST /v1/systemone, Jev body + top-level
 images=["data:image/jpeg;base64,..."] (imajev-2b/4b/9b playground server).
-Default: http loopback only. Opt-in remote mode (Jev on Google Colab behind an https tunnel):
-CRIB_JEV_URL=https://... + CRIB_JEV_TOKEN (see remote_settings.py). Remote needs https AND a token;
-live watch uses it only with CRIB_JEV_REMOTE_LIVE=1. Plain http to a non-loopback host is refused.
+Default: http loopback only. Opt-in remote mode (any Jev-compatible web API, e.g. Jev on Google Colab behind
+an https tunnel): CRIB_JEV_URL + CRIB_JEV_TOKEN (see remote_settings.py). The address may carry its own path.
+localhost and private-network addresses may use plain http and no token; every other address needs https AND
+a token. The token goes only in the Authorization header. Live watch uses the remote server only with
+CRIB_JEV_REMOTE_LIVE=1. Redirects are never followed.
 The reply must echo usage.images with one entry, else the server ignored the
 photo (text-only Jev) and the verdict is dropped.
 
@@ -226,8 +228,9 @@ class Endpoint:
     kind: str  # 'local' | 'remote'
     host: str
     port: int
-    path: str  # request path of /v1/systemone
+    path: str  # request path of the systemone call
     token: str = ""
+    scheme: str = "https"  # remote only: 'http' is allowed just for localhost / private network
 
     def __repr__(self) -> str:  # no token, masked host
         where = remote_settings.mask_host(self.host) if self.kind == "remote" else f"{self.host}:{self.port}"
@@ -256,12 +259,11 @@ def _local_endpoint(url: str) -> Endpoint:
 
 def _remote_endpoint(s: "remote_settings.Settings") -> Endpoint:
     try:
-        base = remote_settings.validate_url(s.url)
-        token = remote_settings.validate_token(s.token)
+        u = remote_settings.parse_url(s.url)
+        token = remote_settings.validate_token(s.token, u.token_required)
     except remote_settings.SettingsError as e:
         raise RemoteJevError("remote jev settings invalid: " + str(e)) from None
-    parsed = urlparse(base)
-    return Endpoint("remote", parsed.hostname, parsed.port or 443, "/v1/systemone", token)
+    return Endpoint("remote", u.host, u.port, u.path, token, u.scheme)
 
 
 def endpoint_from_settings(s: "remote_settings.Settings") -> Endpoint:
@@ -281,10 +283,6 @@ def resolve_endpoint(live: bool = False, environ=None) -> Endpoint:
     if not s.remote_url_configured:
         # Legacy path: CRIB_JEV_URL (default DEFAULT_URL) must be http loopback /v1/systemone, else SystemExit.
         return _local_endpoint(environ.get("CRIB_JEV_URL", DEFAULT_URL))
-    scheme = urlparse(s.url).scheme
-    if scheme != "https":
-        # http to a non-loopback host (or anything else odd) is refused, same as before.
-        return _local_endpoint(s.url)
     if live and not s.remote_live:
         if not _warned_live:
             _warned_live = True
@@ -298,7 +296,7 @@ def remote_live_active(environ=None) -> bool:
     """True if live watch would use the remote backend. Never raises."""
     try:
         s = remote_settings.load(environ)
-        return remote_settings.uses_remote(s, True) and urlparse(s.url).scheme == "https"
+        return remote_settings.uses_remote(s, True)
     except Exception:
         return False
 
@@ -331,11 +329,15 @@ def _exchange(ep: Endpoint, method: str, path: str, payload: dict | None, timeou
         headers["Content-Type"] = "application/json"
         body = json.dumps(payload).encode("utf-8")
     if ep.kind == "remote":
-        headers["Authorization"] = "Bearer " + ep.token
+        if ep.token:  # header only, never in the URL; optional on localhost / private network
+            headers["Authorization"] = "Bearer " + ep.token
         headers["User-Agent"] = "crib-monitor"  # some CDNs reject requests with no User-Agent
         # http.client never follows redirects, so a frame cannot bounce to another host.
-        conn = http.client.HTTPSConnection(ep.host, ep.port, timeout=timeout,
-                                           context=ssl.create_default_context())
+        if ep.scheme == "https":
+            conn = http.client.HTTPSConnection(ep.host, ep.port, timeout=timeout,
+                                               context=ssl.create_default_context())
+        else:
+            conn = http.client.HTTPConnection(ep.host, ep.port, timeout=timeout)
         try:
             try:
                 conn.request(method, path, body, headers)
@@ -370,9 +372,16 @@ def _exchange(ep: Endpoint, method: str, path: str, payload: dict | None, timeou
         conn.close()
 
 
+def models_path(ep: Endpoint) -> str:
+    """'.../systemone' -> '.../models' (so /v1/systemone gives /v1/models); other paths use /v1/models."""
+    if ep.kind == "remote" and ep.path.endswith("/systemone"):
+        return ep.path[: -len("systemone")] + "models"
+    return "/v1/models"
+
+
 def get_models(ep: Endpoint, timeout: float = 15.0) -> str | None:
     """GET /v1/models through the same client code. Returns the first model id, or None if not reported."""
-    out = _exchange(ep, "GET", "/v1/models", None, _timeout_for(ep, timeout))
+    out = _exchange(ep, "GET", models_path(ep), None, _timeout_for(ep, timeout))
     items = out.get("data") if isinstance(out.get("data"), list) else out.get("models")
     if isinstance(items, list) and items:
         first = items[0]
