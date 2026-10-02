@@ -3,6 +3,12 @@
 Starts watch.py and the selected model server. The photo stays in this window.
 ntfy still gets text only, and only if 푸시 is on. Secrets in rtsp.env and
 ntfy.env are not shown or edited.
+
+"Jev 서버" panel: local (default) or remote (Jev on Google Colab). The logic lives in
+remote_settings.py (settings file crib_remote.env, validation, connection test); this file only
+draws it. The token is masked (show toggle) and only stored in crib_remote.env (0600 best effort).
+Remote is used by the photo tests; live watch uses it only with the extra checkbox
+"실시간 감시에도 원격 사용". The tkinter UI was NOT run by the author (no tkinter on the dev box).
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageTk
 
+import remote_settings
 from judge import model_kind
 from jev_protocol import ALERT_AT
 from score_log import log_judgment
@@ -346,6 +353,8 @@ class App:
         ttk.Button(mid, text="붙여넣기", command=self.test_clipboard).pack(side="left")
         self.root.bind("<Control-v>", lambda _e: self.test_clipboard())
 
+        self._build_jev_panel()
+
         self.headline = tk.Label(self.root, text="판정 없음", justify="left", anchor="w", padx=12, font=("Segoe UI", 28, "bold"))
         self.headline.pack(fill="x")
         self.detail = tk.Label(self.root, text="", justify="left", anchor="w", padx=12, font=("Segoe UI", 16), wraplength=860)
@@ -361,6 +370,102 @@ class App:
             text="의료기기 아님. 종료는 이 창이 켠 감시만 끕니다. 서버는 남습니다. 푸시에는 사진이 없습니다.",
             anchor="w", padding=(8, 0, 8, 8),
         ).pack(fill="x")
+
+    def _build_jev_panel(self) -> None:
+        """Thin tkinter part of the 'Jev 서버' settings. All logic is in remote_settings.py."""
+        saved = remote_settings.load()
+        self.r_backend = tk.StringVar(value="remote" if saved.backend == "remote" else "local")
+        self.r_url = tk.StringVar(value=saved.url)
+        self.r_token = tk.StringVar(value=saved.token)
+        self.r_live = tk.BooleanVar(value=saved.remote_live)
+        self.r_show = tk.BooleanVar(value=False)
+        self.r_model = tk.StringVar(value="모델: -")
+        self.r_result = tk.StringVar(value="")
+        self.r_status = tk.StringVar(value="")
+        box = ttk.LabelFrame(self.root, text="Jev 서버", padding=6)
+        box.pack(fill="x", padx=8, pady=(0, 4))
+        row1 = ttk.Frame(box)
+        row1.pack(fill="x")
+        ttk.Radiobutton(row1, text="로컬(기본)", variable=self.r_backend, value="local").pack(side="left")
+        ttk.Radiobutton(row1, text="원격(Colab)", variable=self.r_backend, value="remote").pack(side="left", padx=8)
+        ttk.Label(row1, textvariable=self.r_model).pack(side="left", padx=12)
+        row2 = ttk.Frame(box)
+        row2.pack(fill="x", pady=2)
+        ttk.Label(row2, text="주소").pack(side="left")
+        ttk.Entry(row2, textvariable=self.r_url, width=46).pack(side="left", padx=(4, 12))
+        ttk.Label(row2, text="토큰").pack(side="left")
+        self.r_token_entry = ttk.Entry(row2, textvariable=self.r_token, width=30, show="*")
+        self.r_token_entry.pack(side="left", padx=4)
+        ttk.Checkbutton(row2, text="보이기", variable=self.r_show, command=self.toggle_token).pack(side="left")
+        row3 = ttk.Frame(box)
+        row3.pack(fill="x")
+        ttk.Checkbutton(row3, text="실시간 감시에도 원격 사용", variable=self.r_live).pack(side="left")
+        tk.Label(row3, text="체크하면 감시 중인 아기 사진이 집 밖(Colab)으로 나갑니다. 끊기면 '판정 불가' 알림이 갑니다.",
+                 fg="#9b1c1c").pack(side="left", padx=8)
+        row4 = ttk.Frame(box)
+        row4.pack(fill="x", pady=2)
+        ttk.Button(row4, text="저장", command=self.save_remote).pack(side="left")
+        ttk.Button(row4, text="연결 테스트", command=self.test_remote).pack(side="left", padx=6)
+        ttk.Label(row4, textvariable=self.r_result).pack(side="left", padx=6)
+        self.r_status_label = tk.Label(box, textvariable=self.r_status, anchor="w", justify="left", fg="#57534e")
+        self.r_status_label.pack(fill="x")
+        ttk.Label(box, text="저장해야 적용됩니다. 사진 테스트는 저장된 설정을 씁니다. 환경 변수(CRIB_JEV_*)가 파일보다 우선합니다.",
+                  foreground="#57534e").pack(fill="x")
+
+    def toggle_token(self) -> None:
+        self.r_token_entry.configure(show="" if self.r_show.get() else "*")
+
+    def _form(self) -> remote_settings.Settings:
+        return remote_settings.settings_from_form(self.r_backend.get(), self.r_url.get(), self.r_token.get(),
+                                                  "", self.r_live.get())
+
+    def save_remote(self) -> None:
+        form = self._form()
+        saved = remote_settings.load()
+        # keep a hand-edited timeout from the file; the panel has no field for it
+        form = remote_settings.Settings(form.backend, form.url, form.token, saved.timeout, form.remote_live)
+        try:
+            remote_settings.save(form)
+        except remote_settings.SettingsError as exc:
+            self.note.set(f"저장하지 않았습니다: {exc}")
+            return
+        except OSError as exc:
+            self.note.set(f"저장하지 못했습니다: {type(exc).__name__}")
+            return
+        self.note.set("Jev 서버 설정을 저장했습니다. 감시 중이면 다음 판정부터 적용됩니다.")
+        self._refresh_backend()
+
+    def test_remote(self) -> None:
+        """GET /v1/models through the same client code as judging, off the UI thread."""
+        form = self._form()
+        self.r_result.set("연결 확인 중...")
+        # the form is tested as typed; 'local' tests the loopback server
+        settings = form if form.backend == "remote" else remote_settings.Settings()
+
+        def work() -> None:
+            res = remote_settings.test_connection(settings)
+
+            def done() -> None:
+                self.r_result.set(res["message"])
+                self.r_model.set("모델: " + (res["model"] or "-") if res["ok"] else "모델: -")
+
+            self.root.after(0, done)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _refresh_backend(self) -> None:
+        settings = remote_settings.load()
+        text = remote_settings.status_line(settings, self.kind.get())
+        over = remote_settings.env_overrides()
+        if over and self.kind.get() == "jev":
+            text += "  [환경 변수 우선: " + ", ".join(over) + "]"
+        self.r_status.set(text)
+        remote = self.kind.get() == "jev" and remote_settings.uses_remote(settings, False)
+        self.r_status_label.configure(fg="#9b1c1c" if remote else "#14532d")
+
+    def _remote_for(self, live: bool) -> bool:
+        """Would a call from the photo test (live=False) or the live watch (live=True) go to the remote Jev?"""
+        return self.kind.get() == "jev" and remote_settings.uses_remote(remote_settings.load(), live)
 
     def _spawn(self, argv: list[str], log_name: str, env: dict | None = None) -> subprocess.Popen:
         (DIR / "frames").mkdir(parents=True, exist_ok=True)
@@ -415,13 +520,15 @@ class App:
         if self.watch_proc and self.watch_proc.poll() is None:
             self.note.set("감시가 이미 켜져 있습니다.")
             return
-        if not port_open(PORTS[self.kind.get()]):
+        remote_live = self._remote_for(True)
+        if not remote_live and not port_open(PORTS[self.kind.get()]):
             self.note.set("서버가 꺼져 있어서 감시를 시작하지 않습니다.")
             return
         env = os.environ.copy()
         env["CRIB_MODEL"] = self.kind.get()
         self.watch_proc = self._spawn(watch_argv(self.send.get()), "gui-watch.log", env)
-        self.note.set("감시를 시작했습니다." + (" 푸시 켜짐." if self.send.get() else " 푸시 꺼짐."))
+        self.note.set("감시를 시작했습니다." + (" 푸시 켜짐." if self.send.get() else " 푸시 꺼짐.")
+                      + (" 원격 Jev 사용 중: 사진이 집 밖으로 나갑니다." if remote_live else ""))
 
     def stop_watch(self) -> None:
         if self.watch_proc and self.watch_proc.poll() is None:
@@ -436,7 +543,7 @@ class App:
         if running:
             self._stop_proc(self.watch_proc)
             self.watch_proc = None
-        if running and port_open(PORTS[self.kind.get()]):
+        if running and (self._remote_for(True) or port_open(PORTS[self.kind.get()])):
             self.start_watch()
         elif running:
             self.note.set("모델을 바꿨습니다. 서버가 꺼져 있어 감시는 중지됐습니다.")
@@ -467,6 +574,7 @@ class App:
         kind = self.kind.get()
         up = port_open(PORTS[kind])
         self.server_label.configure(text=f"{kind} {PORTS[kind]} " + ("켜짐" if up else "꺼짐"))
+        self._refresh_backend()
         watching = self.watch_proc is not None and self.watch_proc.poll() is None
         cam_text, cam_color = camera_view(watching, read_status())
         self.camera_label.configure(text=cam_text, fg=cam_color)
@@ -533,14 +641,15 @@ class App:
         if self._testing:
             self.note.set("테스트가 아직 돌아가는 중입니다.")
             return
-        if not port_open(PORTS[self.kind.get()]):
+        remote = self._remote_for(False)
+        if not remote and not port_open(PORTS[self.kind.get()]):
             self.note.set("서버가 꺼져 있어서 테스트하지 않습니다.")
             return
         self._testing = True
         self._show(image)
         self._apply_verdict({"error": True, "reason": "판정 중"})
         self.headline.configure(text="판정 중", fg="#333333")
-        self.note.set("폰으로는 보내지 않습니다.")
+        self.note.set("폰으로는 보내지 않습니다." + (" 원격 Jev로 보냅니다: 사진이 집 밖으로 나갑니다." if remote else ""))
         kind = self.kind.get()
 
         def work() -> None:
@@ -627,6 +736,12 @@ def _check() -> None:
     assert camera_view(True, {"camera": "ok"}) == ("카메라 연결됨", "#14532d")
     assert camera_view(True, {"camera": "down"})[0] == "카메라 끊김"
     assert camera_view(True, {})[0] == "카메라 확인 중"
+    # Jev 서버 panel logic (the tkinter widgets themselves are not exercised here)
+    st = remote_settings.Settings("remote", "https://abc-def.trycloudflare.com", "tok_0123456789", "", False)
+    assert remote_settings.uses_remote(st, False) and not remote_settings.uses_remote(st, True)
+    line = remote_settings.status_line(st)
+    assert "원격" in line and "abc-def" not in line and "tok_0123" not in line
+    assert "로컬" in remote_settings.status_line(remote_settings.Settings())
     print("ok crib-gui")
 
 
