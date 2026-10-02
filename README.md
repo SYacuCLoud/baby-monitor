@@ -132,6 +132,7 @@ python score_folder.py --selftest   # 가짜 판정 함수와 임시 폴더만 �
 python remote_settings.py
 python test_remote.py           # 원격 모드 규칙, 가짜 https 서버 (openssl 필요)
 python test_remote_live.py      # 실시간 감시 경로 (푸시는 가짜 함수로 대체, 실제 ntfy 안 씀)
+python test_stop.py             # GUI '서버 중지': 프로세스 트리 종료 (가짜 프로세스, tkinter 없이)
 python colab/gateway.py --selftest
 python colab/start_colab.py --selftest
 python colab/make_notebook.py --check
@@ -437,6 +438,7 @@ python score_folder.py --selftest
 | `colab/gateway.py` | Colab용 토큰 검사 리버스 프록시 (표준 라이브러리, 자체 검사) |
 | `colab/start_colab.py`, `colab/make_notebook.py`, `colab/imajev_colab.ipynb` | Colab 실행 스크립트, 노트북 생성기와 노트북 |
 | `test_remote.py`, `test_remote_live.py` | 원격 모드 자체 검사 (가짜 서버) |
+| `proc_stop.py`, `test_stop.py` | 서버 중지(프로세스 트리 종료, Windows는 `taskkill /T /F`)와 그 자체 검사 |
 | `ntfy.env.example`, `rtsp.env.example`, `crib_remote.env.example` | 설정 예시. 실제 `ntfy.env`, `rtsp.env`, `crib_remote.env`는 커밋 금지 |
 | `requirements.txt` | Python 의존성 (`Pillow`, `numpy`) |
 | `docs/architecture.html` | 파이프라인 도식. 일부 설명이 현재 코드와 다름 (움직임 비교가 "이전 프레임 대비"만으로 적혀 있고, `normalize`가 "얼굴 노출 시 알림 취소"를 한다고 적혀 있으나 코드에는 없음, 모델을 Qwen으로 표기) |

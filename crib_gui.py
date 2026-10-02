@@ -26,6 +26,7 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageTk
 
+import proc_stop
 import remote_settings
 from judge import model_kind
 from jev_protocol import ALERT_AT
@@ -42,8 +43,6 @@ PREVIEW = 720
 IMAJEV_PY = Path(os.environ.get("IMAJEV_PY", r"D:\Dev\imajev\.venv\Scripts\python.exe"))
 LLAMA = Path(os.environ.get("LLAMA_SERVER", r"D:\Dev\llama.cpp\llama-server.exe"))
 QWEN_DIR = Path(os.environ.get("QWEN_DIR", r"D:\Dev\_Models\Qwen3-VL-4B"))
-
-_NO_WINDOW = 0x08000000
 
 
 def tail_ticks(path: Path, n: int = HISTORY) -> list[dict]:
@@ -473,7 +472,7 @@ class App:
         self._logs.append(handle)
         return subprocess.Popen(
             argv, cwd=str(DIR), env=env, stdout=handle, stderr=subprocess.STDOUT,
-            creationflags=_NO_WINDOW,
+            **proc_stop.spawn_kwargs(),
         )
 
     def start_server(self) -> None:
@@ -490,31 +489,64 @@ class App:
         self.note.set(f"{kind} 서버를 켜는 중입니다.")
 
     def stop_server(self) -> None:
+        try:
+            self.note.set(self._stop_server())
+        except Exception as exc:  # a Tk callback would only print this to stderr: show it instead
+            self.note.set(f"서버를 중지하지 못했습니다: {type(exc).__name__}: {exc}")
+
+    def _stop_server(self) -> str:
+        """Returns the message to show. 'stopped' is only claimed once the port is really closed."""
         kind = self.kind.get()
+        port = PORTS[kind]
         if self.server_proc and self.server_proc.poll() is None and self.server_kind == kind:
-            self._stop_proc(self.server_proc)
+            ok = self._stop_proc(self.server_proc)
             self.server_proc = None
-            self.note.set("이 창이 켠 서버를 중지했습니다.")
-            return
-        pid = listening_pid(PORTS[kind])
+            if not ok:
+                return "이 창이 켠 서버가 종료되지 않았습니다. 작업 관리자에서 직접 끝내 주세요."
+            if not proc_stop.wait_port_closed(port, 5.0, port_open):
+                return self._still_open(kind, port)
+            return "이 창이 켠 서버를 중지했습니다."
+        pid = listening_pid(port)
         if pid is None:
-            self.note.set("서버가 꺼져 있습니다.")
-            return
+            if kind == "jev":
+                remote = self._switch_to_local()
+                if remote:
+                    return remote
+            return "서버가 꺼져 있습니다."
         command = process_command(pid)
         if not allowed_stop(kind, command):
-            self.note.set("이 포트의 프로세스가 모델 서버가 아니라서 중지하지 않았습니다.")
-            return
-        subprocess.run(["taskkill", "/PID", str(pid), "/T"], check=False, creationflags=_NO_WINDOW)
-        self.note.set("모델 서버를 중지했습니다.")
+            return "이 포트의 프로세스가 모델 서버가 아니라서 중지하지 않았습니다."
+        # /F: a windowless server ignores the polite WM_CLOSE; /T: also the children (venv launcher -> python)
+        proc_stop.kill_pid_tree(pid, True)
+        if not proc_stop.wait_port_closed(port, 5.0, port_open):
+            return self._still_open(kind, port, "이 창이 켠 서버가 아니라서 권한 등으로 끝내지 못했을 수 있습니다. ")
+        return "모델 서버를 중지했습니다."
 
-    def _stop_proc(self, proc: subprocess.Popen) -> None:
-        if proc.poll() is not None:
-            return
-        proc.terminate()
+    def _still_open(self, kind: str, port: int, hint: str = "") -> str:
+        return f"{kind} 서버를 껐지만 포트 {port}이(가) 아직 열려 있습니다. {hint}작업 관리자에서 직접 끝내 주세요."
+
+    def _switch_to_local(self) -> str | None:
+        """Remote Jev has no local process: 'off' means going back to local. None if not in remote mode."""
+        settings = remote_settings.load()
+        if settings.backend != "remote":
+            return None
+        if "CRIB_JEV_BACKEND" in remote_settings.env_overrides():
+            return "원격 모드는 환경 변수 CRIB_JEV_BACKEND로 정해져 있어 GUI에서 바꿀 수 없습니다. 꺼야 할 로컬 프로세스도 없습니다."
+        saved = remote_settings.Settings("local", settings.url, settings.token, settings.timeout, settings.remote_live)
         try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            remote_settings.save(saved)
+        except (remote_settings.SettingsError, OSError) as exc:
+            return f"원격 연결을 해제하지 못했습니다: {type(exc).__name__}"
+        self.r_backend.set("local")
+        self._refresh_backend()
+        warn = ""
+        if self.watch_proc and self.watch_proc.poll() is None:
+            warn = " 감시가 켜져 있으면 로컬 서버를 쓰므로 로컬 서버가 꺼져 있으면 판정이 실패합니다."
+        return "원격 Jev 연결을 해제했습니다(로컬로 전환, 끌 프로세스 없음)." + warn
+
+    def _stop_proc(self, proc: subprocess.Popen) -> bool:
+        """Stop proc and its whole process tree (terminate/kill, taskkill /T /F on Windows)."""
+        return proc_stop.stop_process_tree(proc)
 
     def start_watch(self) -> None:
         if self.watch_proc and self.watch_proc.poll() is None:
