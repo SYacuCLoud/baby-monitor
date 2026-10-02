@@ -4,7 +4,7 @@ Starts watch.py and the selected model server. The photo stays in this window.
 ntfy still gets text only, and only if 푸시 is on. Secrets in rtsp.env and
 ntfy.env are not shown or edited.
 
-"Jev 서버" panel: local (default) or remote (Jev on Google Colab). The logic lives in
+"Jev 서버" panel: local (default) or a remote Jev-compatible web API server (e.g. Colab). The logic lives in
 remote_settings.py (settings file crib_remote.env, validation, connection test); this file only
 draws it. The token is masked (show toggle) and only stored in crib_remote.env (0600 best effort).
 Remote is used by the photo tests; live watch uses it only with the extra checkbox
@@ -386,7 +386,7 @@ class App:
         row1 = ttk.Frame(box)
         row1.pack(fill="x")
         ttk.Radiobutton(row1, text="로컬(기본)", variable=self.r_backend, value="local").pack(side="left")
-        ttk.Radiobutton(row1, text="원격(Colab)", variable=self.r_backend, value="remote").pack(side="left", padx=8)
+        ttk.Radiobutton(row1, text="원격 서버", variable=self.r_backend, value="remote").pack(side="left", padx=8)
         ttk.Label(row1, textvariable=self.r_model).pack(side="left", padx=12)
         row2 = ttk.Frame(box)
         row2.pack(fill="x", pady=2)
@@ -399,13 +399,17 @@ class App:
         row3 = ttk.Frame(box)
         row3.pack(fill="x")
         ttk.Checkbutton(row3, text="실시간 감시에도 원격 사용", variable=self.r_live).pack(side="left")
-        tk.Label(row3, text="체크하면 감시 중인 아기 사진이 집 밖(Colab)으로 나갑니다. 끊기면 '판정 불가' 알림이 갑니다.",
+        tk.Label(row3, text="체크하면 감시 중인 아기 사진이 이 주소의 서버로 나갑니다. 끊기면 '판정 불가' 알림이 갑니다.",
                  fg="#9b1c1c").pack(side="left", padx=8)
         row4 = ttk.Frame(box)
         row4.pack(fill="x", pady=2)
         ttk.Button(row4, text="저장", command=self.save_remote).pack(side="left")
         ttk.Button(row4, text="연결 테스트", command=self.test_remote).pack(side="left", padx=6)
         ttk.Label(row4, textvariable=self.r_result).pack(side="left", padx=6)
+        tk.Label(box, anchor="w", justify="left", fg="#9b1c1c",
+                 text="사진이 이 주소로 나갑니다 (사진 테스트, 점수 측정, 위 칸을 체크한 실시간 감시). 연결 테스트 자체는 사진을 보내지 않습니다.\n"
+                      "localhost와 사설 IP(192.168.x.x 등)는 http와 토큰 없음이 가능하고, 그 밖의 주소는 https와 토큰이 필요합니다."
+                 ).pack(fill="x")
         self.r_status_label = tk.Label(box, textvariable=self.r_status, anchor="w", justify="left", fg="#57534e")
         self.r_status_label.pack(fill="x")
         ttk.Label(box, text="저장해야 적용됩니다. 사진 테스트는 저장된 설정을 씁니다. 환경 변수(CRIB_JEV_*)가 파일보다 우선합니다.",
@@ -564,7 +568,7 @@ class App:
         env["CRIB_MODEL"] = self.kind.get()
         self.watch_proc = self._spawn(watch_argv(self.send.get()), "gui-watch.log", env)
         self.note.set("감시를 시작했습니다." + (" 푸시 켜짐." if self.send.get() else " 푸시 꺼짐.")
-                      + (" 원격 Jev 사용 중: 사진이 집 밖으로 나갑니다." if remote_live else ""))
+                      + (f" 원격 서버 사용 중: {remote_settings.photo_destination(remote_settings.load().url)}." if remote_live else ""))
 
     def stop_watch(self) -> None:
         if self.watch_proc and self.watch_proc.poll() is None:
@@ -685,7 +689,7 @@ class App:
         self._show(image)
         self._apply_verdict({"error": True, "reason": "판정 중"})
         self.headline.configure(text="판정 중", fg="#333333")
-        self.note.set("폰으로는 보내지 않습니다." + (" 원격 Jev로 보냅니다: 사진이 집 밖으로 나갑니다." if remote else ""))
+        self.note.set("폰으로는 보내지 않습니다." + (f" 원격 서버로 보냅니다: {remote_settings.photo_destination(remote_settings.load().url)}." if remote else ""))
         kind = self.kind.get()
 
         def work() -> None:
@@ -778,6 +782,9 @@ def _check() -> None:
     line = remote_settings.status_line(st)
     assert "원격" in line and "abc-def" not in line and "tok_0123" not in line
     assert "로컬" in remote_settings.status_line(remote_settings.Settings())
+    lan = remote_settings.Settings("remote", "http://192.168.1.20:9000/api", "", "", True)
+    assert remote_settings.validate(lan) == lan and "같은 네트워크" in remote_settings.status_line(lan)
+    assert "192" not in remote_settings.status_line(lan) and "집 밖" in remote_settings.photo_destination(st.url)
     print("ok crib-gui")
 
 

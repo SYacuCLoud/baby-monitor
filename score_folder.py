@@ -3,9 +3,10 @@
 Usage: python score_folder.py <folder> [--model jev|qwen] [--csv out.csv] [--remote]
        python score_folder.py --selftest
 
---remote: send the photos to the remote Jev (Colab) configured in crib_remote.env or CRIB_JEV_URL +
-CRIB_JEV_TOKEN (https + token only). Photos leave this PC. Without --remote the crib_remote.env file is
-ignored (unless CRIB_JEV_BACKEND=remote is set in the environment) and nothing changes: local loopback Jev. (An explicit https CRIB_JEV_URL + CRIB_JEV_TOKEN in the
+--remote: send the photos to the remote Jev web API server configured in crib_remote.env or CRIB_JEV_URL +
+CRIB_JEV_TOKEN (https + token; localhost / private network may use http and no token). Photos leave this PC
+(or go to another device on your network). Without --remote the crib_remote.env file is
+ignored (unless CRIB_JEV_BACKEND=remote is set in the environment) and nothing changes: local loopback Jev. (An explicit remote CRIB_JEV_URL (+ CRIB_JEV_TOKEN) in the
 environment is honored either way.)
 
 Uses the same call as the GUI single-photo test (crib_gui.py _run_test): the photo is opened with
@@ -203,12 +204,12 @@ def run(folder: Path, model: str, csv_path: Path | None = None, ask_fn=None, out
                 print(f"remote settings: {exc}", file=sys.stderr)
                 return 2
             if remote and ep.kind != "remote":
-                print("--remote needs https CRIB_JEV_URL + CRIB_JEV_TOKEN (env or crib_remote.env).", file=sys.stderr)
+                print("--remote needs a remote CRIB_JEV_URL (https + CRIB_JEV_TOKEN, or http on localhost/private network) in env or crib_remote.env.", file=sys.stderr)
                 return 2
             if ep.kind == "remote":
-                from remote_settings import mask_host
+                from remote_settings import destination_for_scope, host_scope, mask_host
 
-                out.write(f"backend: remote ({mask_host(ep.host)}) - photos leave this PC\n")
+                out.write(f"backend: remote ({mask_host(ep.host)}) - {destination_for_scope(host_scope(ep.host))}\n")
             from jev_protocol import alert_at
 
             current = alert_at("face_down")  # SystemExit with a clear message on a bad env value
@@ -391,7 +392,7 @@ def _main(argv: list[str]) -> int:
     ap.add_argument("--model", choices=("jev", "qwen"), default="jev")
     ap.add_argument("--csv", metavar="OUT.CSV", help="also write the table as CSV")
     ap.add_argument("--remote", action="store_true",
-                    help="use the remote Jev (Colab) from crib_remote.env / env. Photos leave this PC")
+                    help="use the remote Jev server from crib_remote.env / env. Photos leave this PC")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args(argv)
     if a.selftest:

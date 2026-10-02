@@ -205,6 +205,20 @@ def url_scope(url: str) -> str:
         return "public"
 
 
+_DEST = {"public": "사진이 집 밖으로 나갑니다",
+         "private": "사진이 같은 네트워크의 다른 기기로 나갑니다",
+         "loopback": "사진은 이 PC 안의 다른 서버로 갑니다"}
+
+
+def destination_for_scope(scope: str) -> str:
+    return _DEST.get(scope, _DEST["public"])
+
+
+def photo_destination(url: str) -> str:
+    """One Korean sentence (no address in it) saying where photos go for this server address."""
+    return destination_for_scope(url_scope(url))
+
+
 def validate_token(token: str, required: bool = True) -> str:
     tok = (token or "").strip()
     if not tok:
@@ -314,10 +328,7 @@ def status_line(settings: Settings, kind: str = "jev") -> str:
             return "판정 백엔드: 로컬 (원격으로 선택했지만 주소가 없음 → 로컬 사용)"
         return "판정 백엔드: 로컬 (127.0.0.1)"
     host = mask_host(settings.url)
-    scope = url_scope(settings.url)
-    where = {"public": "사진이 집 밖으로 나갑니다",
-             "private": "사진이 같은 네트워크의 다른 기기로 나갑니다",
-             "loopback": "사진은 이 PC 안의 다른 서버로 갑니다"}[scope]
+    where = photo_destination(settings.url)
     if settings.remote_live:
         return f"판정 백엔드: 원격 서버 ({host}) — 실시간 감시·사진 테스트 모두 원격. {where}"
     return f"판정 백엔드: 원격 서버 ({host}) — 사진 테스트/점수 측정만. 실시간 감시는 로컬"
