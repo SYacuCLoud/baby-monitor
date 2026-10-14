@@ -2,8 +2,7 @@
 
 Wire: POST /v1/systemone, Jev body + top-level
 images=["data:image/jpeg;base64,..."] (imajev-2b/4b/9b playground server).
-Default: http loopback only. Opt-in remote mode (any Jev-compatible web API, e.g. Jev on Google Colab behind
-an https tunnel): CRIB_JEV_URL + CRIB_JEV_TOKEN (see remote_settings.py). The address may carry its own path.
+Default: http loopback only. Opt-in remote: CRIB_JEV_URL + CRIB_JEV_TOKEN (see remote_settings.py).
 localhost and private-network addresses may use plain http and no token; every other address needs https AND
 a token. The token goes only in the Authorization header. Live watch uses the remote server only with
 CRIB_JEV_REMOTE_LIVE=1. Redirects are never followed.

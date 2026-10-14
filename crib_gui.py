@@ -2,7 +2,7 @@
 
 Starts watch.py and the selected model server. The photo stays in this window.
 ntfy still gets text only, and only if 푸시 is on. Secrets in rtsp.env and
-ntfy.env are not shown or edited. Local only: no Colab panel.
+ntfy.env are not shown or edited. Local only.
 Left: model, watch, test. Right: photo and tick log.
 """
 

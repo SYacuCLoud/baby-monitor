@@ -1,9 +1,9 @@
-"""Self-test for generic web API servers (not only Colab). python test_webapi.py
+"""Self-test for generic web API servers. python test_webapi.py
 
 Plain-http stub on 127.0.0.1 only (no network, no openssl needed). Covers: custom path, token optional on
 localhost, token only in the Authorization header (never in the URL), redirects not followed, the models
-path follows the systemone path, nothing secret in errors/results/settings text, and the old Colab-style
-crib_remote.env / CRIB_JEV_* settings still load and resolve to the same endpoint as before.
+path follows the systemone path, nothing secret in errors/results/settings text, and an older
+crib_remote.env / CRIB_JEV_* settings file still loads and resolves to the same endpoint as before.
 """
 
 from __future__ import annotations
@@ -142,8 +142,8 @@ def web_api_over_http(tmp: Path) -> None:
     print("  ok web API over http (custom path, optional token, header only, no redirect, errors)")
 
 
-def old_colab_settings_still_work(tmp: Path) -> None:
-    secret = "ColabTokenValue_abcdef0123456789"
+def old_remote_env_still_works(tmp: Path) -> None:
+    secret = "RemoteTokenValue_abcdef0123456789"
     f = tmp / "crib_remote.env"
     # exactly what the previous version wrote
     f.write_text("# Local only.\nCRIB_JEV_BACKEND=remote\nCRIB_JEV_URL=https://abc-def.trycloudflare.com\n"
@@ -167,7 +167,7 @@ def old_colab_settings_still_work(tmp: Path) -> None:
     with envc(CRIB_REMOTE_ENV=str(tmp / "none.env"), CRIB_JEV_URL="https://abc-def.trycloudflare.com",
               CRIB_JEV_TOKEN=secret):
         assert J.resolve_endpoint().token == secret
-    print("  ok old Colab settings (crib_remote.env, CRIB_JEV_URL/TOKEN/TIMEOUT/REMOTE_LIVE) unchanged")
+    print("  ok old remote env (crib_remote.env, CRIB_JEV_URL/TOKEN/TIMEOUT/REMOTE_LIVE) unchanged")
 
 
 def local_default_untouched(tmp: Path) -> None:
@@ -182,7 +182,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         local_default_untouched(tmp)
-        old_colab_settings_still_work(tmp)
+        old_remote_env_still_works(tmp)
         web_api_over_http(tmp)
     print("ok webapi")
 

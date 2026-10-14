@@ -13,10 +13,10 @@ best effort). Env overrides the file. The file only counts when its CRIB_JEV_BAC
                             http or https, token optional
                           anything else (every host NAME except 'localhost', public IPs):
                             https AND a token are required
-  CRIB_JEV_TOKEN        bearer token, sent only in the Authorization header. Colab prints one.
+  CRIB_JEV_TOKEN        bearer token, sent only in the Authorization header.
   CRIB_JEV_TIMEOUT      seconds per request (remote only), default = caller's timeout (180)
   CRIB_JEV_REMOTE_LIVE  1 = live watch may use remote too. Default 0: live watch stays local.
-  CRIB_JEV_ENGINE       imajev (default) | d1   local process only; Colab is unchanged.
+  CRIB_JEV_ENGINE       imajev (default) | d1   local process only.
 
 The token and the full URL are never put into error text or logs. Use mask_host().
 Self-test: python remote_settings.py
