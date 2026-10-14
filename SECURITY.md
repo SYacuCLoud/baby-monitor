@@ -1,22 +1,22 @@
-﻿# Security
+# 보안
 
-## Do not file public issues with secrets
+## 공개 이슈·PR에 비밀을 올리지 마세요
 
-Never open a GitHub/GitLab issue, PR, or discussion that includes:
+아래가 들어간 GitHub/GitLab 이슈, PR, 토론을 **절대** 열지 마세요.
 
-- `ntfy.env` contents or your ntfy topic name
-- `rtsp.env` contents, camera passwords, or full RTSP URLs
-- crib photos, `frames/`, or alert logs that describe a child
+- `ntfy.env` 내용이나 ntfy 토픽 이름
+- `rtsp.env` 내용, 카메라 비밀번호, RTSP 주소 전체
+- 아기 사진, `frames/`, 아이를 설명하는 알림·점수 기록
 
-If you accidentally published a secret, rotate it immediately (new ntfy topic, new camera password) and treat the old value as compromised.
+실수로 올렸다면 즉시 바꾸세요(ntfy 토픽 새로 만들기, 카메라 비밀번호 변경). 예전 값은 이미 새어 나간 것으로 보고 다루세요.
 
-## Private disclosure
+## 취약점은 비공개로
 
-If you found a vulnerability in this project (for example a way that photos could leave the machine, or unsafe defaults), email or message the maintainer privately instead of posting exploit details in a public tracker.
+이 프로젝트에서 사진이 PC 밖으로 나갈 수 있는 경로, 위험한 기본값 같은 문제를 찾았다면 공개 이슈에 공격 방법을 쓰지 말고, 관리자에게 **비공개로** 알려 주세요.
 
-## Safe defaults for operators
+## 쓰는 사람이 지킬 기본
 
-- Keep `llama-server` on `127.0.0.1` only
-- Do not expose RTSP, ffmpeg, or the watch loop to the WAN
-- Prefer a long random ntfy topic; `ntfy.sh` topics are world-readable if guessed
-- Never commit `ntfy.env`, `rtsp.env`, or `frames/`
+- `llama-server`는 `127.0.0.1`에만 묶어두세요
+- RTSP, ffmpeg, 감시 프로그램을 인터넷에 열지 마세요
+- ntfy 토픽은 길고 무작위인 값으로 쓰세요. `ntfy.sh` 토픽은 맞히면 누구나 볼 수 있습니다
+- `ntfy.env`, `rtsp.env`, `frames/`는 커밋하지 마세요

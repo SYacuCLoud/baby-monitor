@@ -3,7 +3,7 @@
 규칙은 세 가지뿐입니다. 수면, 이불이 몸만 덮은 경우, 장난감은 알림이 아닙니다. 모르면 알리지 않습니다.
 엎드림은 별도 규칙이 아닙니다. 얼굴이 매트/베개에 파묻히면 `face_cover`입니다.
 
-| rule | 푸시 문구 | 의미 |
+| 규칙 | 푸시 문구 | 설명 |
 | --- | --- | --- |
 | `face_cover` | 입코 가림 | 천이 입과 코를 가리거나, 엎드리거나 옆으로 누워 얼굴이 매트/베개에 파묻힘 |
 | `climbing` | 난간 기어오름 | 아기가 난간 위에 있음. 아기가 보여야 알림 |
@@ -22,7 +22,7 @@
 | `mouth_nose_blocked` | Is fabric covering the baby's mouth and nose? |
 | `climbing` | Is the baby on the crib rail? |
 
-코드가 `should_alert`를 정합니다. 기준 기본값 0.60 (`CRIB_JEV_ALERT_AT_<RULE>`로 규칙별 변경).
+알림 여부는 코드가 정합니다. 기준 기본값 0.60 (`CRIB_JEV_ALERT_AT_<RULE>`로 규칙별 변경).
 
 | 조건 | 결과 |
 | --- | --- |

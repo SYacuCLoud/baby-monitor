@@ -4,13 +4,13 @@
 
 코드(`os.environ`)가 실제로 읽는 것 전부입니다.
 
-| 이름 | 기본값 | 읽는 곳 | 의미 |
+| 이름 | 기본값 | 사용하는 코드 | 설명 |
 | --- | --- | --- | --- |
 | `CRIB_MODEL` | `jev` | `judge.py` | 판정 모델. `jev` 또는 `qwen` (대소문자 무시, 빈 값이면 `jev`). 그 외는 종료 |
-| `CRIB_JEV_URL` | `http://127.0.0.1:8090/v1/systemone` | `jev_protocol.py` | Jev 서버 주소. 기본: `http`, loopback, 인증 정보 없음, 경로 `/v1/systemone`. **원격(선택)**: 그 밖의 주소는 원격 서버로 인식합니다 ([원격 Jev](remote-jev.md)). 경로는 자유(없으면 `/v1/systemone`). `localhost`·사설 IP는 `http`와 토큰 없음 가능, 그 밖은 `https`와 `CRIB_JEV_TOKEN` 필수 |
+| `CRIB_JEV_URL` | `http://127.0.0.1:8090/v1/systemone` | `jev_protocol.py` | Jev 서버 주소. 기본: `http`, 이 PC 안 주소, 인증 정보 없음, 경로 `/v1/systemone`. **원격(선택)**: 그 밖의 주소는 원격 서버로 인식합니다 ([원격 Jev](remote-jev.md)). 경로는 자유(없으면 `/v1/systemone`). `localhost`·사설 IP는 `http`와 토큰 없음 가능, 그 밖은 `https`와 `CRIB_JEV_TOKEN` 필수 |
 | `CRIB_JEV_TOKEN` | (없음) | `jev_protocol.py` | 원격 Jev 서버용 토큰. 공개 주소(그 밖의 주소)에는 필수, `localhost`·사설 IP에서는 선택. 있으면 `Authorization: Bearer` 헤더로만 보냄(주소에 넣지 않음). 로그·오류에 찍지 않음 |
 | `CRIB_JEV_TIMEOUT` | 호출하는 쪽 기본(180초) | `jev_protocol.py` | 원격 요청 한 건의 제한 시간(초, 0 초과 3600 이하). 로컬에는 적용 안 함 |
-| `CRIB_JEV_REMOTE_LIVE` | `0` | `jev_protocol.py`, `watch.py` | `1`이면 **실시간 감시(watch.py)도** 원격 Jev를 씀. 기본은 꺼짐: 원격이 설정돼 있어도 실시간 감시는 로컬 서버만 씀 |
+| `CRIB_JEV_REMOTE_LIVE` | `0` | `jev_protocol.py`, `watch.py` | `1`이면 **감시(`watch.py`)에도** 원격 Jev를 씀. 기본은 꺼짐: 원격이 설정돼 있어도 실시간 감시는 로컬 서버만 씀 |
 | `CRIB_JEV_BACKEND` | `local` | `remote_settings.py` | `remote`일 때만 `crib_remote.env` 파일 값을 읽음. 환경 변수로 `local`을 주면 파일을 무시 |
 | `CRIB_REMOTE_ENV` | `crib_remote.env` | `remote_settings.py` | 설정 파일 경로 바꾸기 (시험용) |
 | `CRIB_JEV_MODEL` | `jev-latest` | `jev_protocol.py` | 요청 본문의 `model` 값 |

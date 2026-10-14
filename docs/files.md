@@ -1,11 +1,11 @@
 # 파일 구조
 
-| 파일 | 역할 |
+| 파일 | 하는 일 |
 | --- | --- |
-| `watch.py` | CLI. 캡처 루프(ffmpeg), 움직임 게이트 호출, 쿨다운, 오류·하트비트 알림, `frames/` 기록 |
-| `motion.py` | 픽셀 차이 움직임 게이트 (`PIXEL_DELTA=25`, `MIN_CHANGED=0.02`) |
+| `watch.py` | CLI. 캡처 루프(ffmpeg), 움직임 확인, 재알림 대기, 오류·살아있음 알림, `frames/` 기록 |
+| `motion.py` | 픽셀 차이로 움직임 확인 (`PIXEL_DELTA=25`, `MIN_CHANGED=0.02`) |
 | `judge.py` | `CRIB_MODEL`로 Jev/Qwen 선택 |
-| `jev_protocol.py` | Jev 클라이언트. 짧은 noul 질문, face_cover=max(face_in_bed, mouth_nose_blocked), loopback 강제 |
+| `jev_protocol.py` | Jev 클라이언트. 짧은 예/아니오 질문, face_cover=max(face_in_bed, mouth_nose_blocked), 이 PC 안 주소만 허용 |
 | `imajev_serve.py` | imajev playground 서버 실행기 (SelectorEventLoop, 이미지 prefill 공유) |
 | `score_log.py` | 판정 점수 기록(`logs/scores.jsonl`), 사진 저장 옵션, `--tail/--csv/--label` CLI |
 | `score_folder.py` | 사진 폴더 점수 측정 CLI (읽기 전용: 푸시·기록·상태 파일 쓰기 없음) |
@@ -18,7 +18,7 @@
 | `proc_stop.py`, `test_stop.py` | 서버 중지(프로세스 트리 종료, Windows는 `taskkill /T /F`)와 그 자체 검사 |
 | `ntfy.env.example`, `rtsp.env.example`, `crib_remote.env.example` | 설정 예시. 실제 `ntfy.env`, `rtsp.env`, `crib_remote.env`는 커밋 금지 |
 | `requirements.txt` | Python 의존성 (`Pillow`, `numpy`) |
-| `docs/architecture.html` | 파이프라인 도식. 일부 설명이 현재 코드와 다름 (움직임 비교가 "이전 프레임 대비"만으로 적혀 있고, `normalize`가 "얼굴 노출 시 알림 취소"를 한다고 적혀 있으나 코드에는 없음, 모델을 Qwen으로 표기) |
+| `docs/architecture.html` | 구조·흐름 도식 (브라우저에서 열기) |
 | `SECURITY.md` | 비밀 정보 취급, 취약점 보고 |
 | `LICENSE` | MIT |
 

@@ -50,4 +50,4 @@ python watch.py --rtsp --send
 python watch.py --image photo.jpg
 ```
 
-자체 검사는 인자 없이 각 스크립트를 실행하면 됩니다. `python crib_gui.py --check`는 창을 띄우지 않고 검사만 합니다.
+인자 없이 각 스크립트를 실행하면 자체 검사가 돌아갑니다. `python crib_gui.py --check`는 창을 띄우지 않고 검사만 합니다.

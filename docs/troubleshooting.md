@@ -1,6 +1,6 @@
 # 문제 해결
 
-| 증상 | 원인과 조치 |
+| 증상 | 원인과 할 일 |
 | --- | --- |
 | `rtsp.env needs RTSP_USER RTSP_PASS RTSP_HOST` | `rtsp.env` 또는 환경 변수에 세 값이 모두 있어야 합니다 |
 | `RTSP_HOST must be host or host:port only` | `rtsp://`나 `/` 없이 `192.168.0.x` 또는 `192.168.0.x:554`로 적으세요 |
@@ -11,7 +11,7 @@
 | `qwen HTTP N`, `jev HTTP N refused` | 서버가 200이 아닌 응답. 서버 로그 확인 (GUI는 `frames/gui-*.log`) |
 | `jev server did not read the frame; verdict dropped` | Jev 서버가 이미지를 못 읽음 (텍스트 전용 서버). 이미지를 받는 imajev playground 서버인지 확인 |
 | `jev url must be http loopback...` | `CRIB_JEV_URL`이 `http://127.0.0.1:포트/v1/systemone` 형태인지 확인 (로컬 기본 경로의 오류). 원격 서버면 `remote jev settings invalid`로 나오며, `localhost`·사설 IP가 아닌 주소는 `https://`와 `CRIB_JEV_TOKEN`이 필요함 |
-| `RemoteJevError: remote jev connection failed / timeout / tls error / HTTP 401` | 원격 Jev 문제. 서버가 꺼졌는지, 주소·토큰이 맞는지 확인. 실시간 감시에서는 이 오류가 반복되면 `판정 불가` 푸시가 감 |
+| `RemoteJevError: remote jev connection failed / timeout / tls error / HTTP 401` | 원격 Jev 문제. 서버가 꺼졌는지, 주소·토큰이 맞는지 확인. 감시 중에는 이 오류가 반복되면 `판정 불가` 푸시가 감 |
 | `CRIB_MODEL must be qwen or jev` | `CRIB_MODEL` 값 수정 또는 삭제 (삭제하면 `jev`) |
 | `ValueError: invalid literal for int()` | `WATCH_HEARTBEAT_SEC`가 정수가 아님 |
 | `CRIB_JEV_ALERT_AT_... must be in (0, 1]` | 기준 값을 0 초과 1 이하 숫자로 (비우면 기본 0.60) |
