@@ -37,22 +37,34 @@ flowchart LR
 
 ## 필요한 것
 
-- Windows PC
+- Windows PC (Python 3.10+)
 - RTSP를 지원하는 Tapo 카메라
-- `ffmpeg`가 설치되어 있고 PATH에 등록되어 있어야 합니다.
-- 모델 서버를 돌리기 위한 파일들 (`RUNTIME.txt` 참고)
+- `ffmpeg`가 설치되어 있고 PATH 환경변수에 등록되어 있어야 합니다.
+- 로컬 AI 모델 런타임 파일 (`runtime/` 디렉터리 구성, 상세 내용은 `RUNTIME.txt` 참고)
 
 ## 설정 방법
 
-1. `rtsp.env.example` 파일을 복사해서 `rtsp.env`로 만든 다음, 카메라 정보를 입력합니다.
-2. 알림을 받으려면 `ntfy.env.example`을 `ntfy.env`로 복사하고, 토픽을 설정합니다.
+1. **파이썬 의존 패키지 설치**
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. **카메라 RTSP 설정**  
+   `rtsp.env.example` 파일을 복사하여 `rtsp.env`로 만든 뒤, 카메라 접속 정보를 입력합니다.
+3. **푸시 알림 설정 (선택 사항)**  
+   알림을 받으려면 `ntfy.env.example`을 `ntfy.env`로 복사하고, ntfy 토픽을 설정합니다.
 
 ## 실행 방법
 
-가장 간단한 방법은 GUI를 띄우는 것입니다.
+### 1. GUI 실행 (권장)
+가장 간단한 방법은 GUI를 띄우는 것입니다. GUI 내에서 선택한 모델 서버(Jev 또는 Qwen)와 감시 프로세스를 함께 시작하고 화면을 확인할 수 있습니다.
 
 ```bash
 python crib_gui.py
 ```
 
+### 2. CLI 단독 실행
+모델 서버가 이미 구동 중인 상태에서 터미널로 감시 루프만 돌릴 수도 있습니다.
 
+```bash
+python watch.py --rtsp
+```
