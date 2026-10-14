@@ -1,20 +1,22 @@
-# Local crib monitor
+# 아기 침대 감시
 
-로컬 PC에서 침대 카메라(또는 사진 한 장)를 Jev 또는 Qwen에 물어보고, 규칙에 걸리면 **ntfy 텍스트만** 보냅니다. 개인용입니다.
+아기 침대에 단 카메라를 이 컴퓨터에서 감시합니다. 입이나 코가 가려졌거나 아기가 난간에 올라가 있으면 휴대전화로 알림 문구만 옵니다. 사진 한 장을 넣어서 시험해 볼 수도 있습니다.
 
-> **의료기기도 안전장치도 아닙니다.** 성인 감독을 대체하지 않습니다. 알림이 없다고 안전한 것이 아닙니다. 모델 정확도는 검증되지 않았습니다.
+이건 의료기기가 아닙니다. 아기를 혼자 두는 용도로 쓰지 마세요. 알림이 안 왔다고 괜찮은 상황이 아니고, 모델이 얼마나 정확한지도 여기서 확인한 적이 없습니다. 울음이나 숨, 체온은 재지 않고, 알림에 사진도 넣지 않습니다.
 
-하지 않는 일: 울음·호흡·체온 감지, 사진 푸시, 클라우드 API, 학습, 사이렌.
+## 어떤 때 알림이 오나
 
-| 규칙 | 의미 |
+| 이름 | 뜻 |
 | --- | --- |
-| `face_cover` | 입코 가림. 천, 또는 엎드리거나 옆으로 누워 얼굴이 매트/베개에 파묻힘 |
-| `climbing` | 난간 |
-| `empty` | 아기·어른 없음 |
+| `face_cover` | 입코 가림. 이불이 입과 코를 덮었거나, 엎드리거나 옆으로 누워 얼굴이 매트나 베개에 파묻힌 때 |
+| `climbing` | 난간에 올라감 |
+| `empty` | 아기와 어른이 모두 없음 |
 
-엎드림은 별도 규칙이 아닙니다. 알림 기준 기본값 0.60.
+얼굴을 매트에 묻고 자는 것만 따로 알리지는 않습니다. 그때는 입코 가림으로 봅니다. 점수가 0.60을 넘으면 알립니다.
 
-## Quick start (Windows)
+## 쓰는 법
+
+윈도우에서 돌아갑니다. 파이썬 3이 필요하고, 카메라를 쓰려면 ffmpeg도 있어야 합니다. 판정은 Jev 아니면 Qwen입니다.
 
 ```text
 python -m venv .venv
@@ -23,30 +25,35 @@ pip install -r requirements.txt
 python crib_gui.py
 ```
 
-창에서 Jev 또는 Qwen 서버를 켠 뒤 감시를 시작합니다. 실행 파일은 `runtime/` 아래입니다 (`RUNTIME.txt`). Jev `127.0.0.1:8090`, Qwen `127.0.0.1:8080`. 8GB GPU라 둘 다 켜지 마세요.
+창이 뜨면 서버를 켠 뒤 감시를 시작하면 됩니다. 서버 프로그램은 `runtime` 폴더에 있고, 파일 이름은 `RUNTIME.txt`에 적어 두었습니다.
 
-창을 닫으면 트레이입니다. 종료는 트레이 메뉴. 푸시에는 사진이 없습니다. 비밀은 `rtsp.env`, `ntfy.env`만 쓰고 커밋하지 마세요.
+Jev는 `127.0.0.1:8090`, Qwen은 `127.0.0.1:8080`을 씁니다. 그래픽카드 메모리가 8GB라서 둘을 한꺼번에 올리면 안 됩니다.
 
-CLI:
+창을 닫으면 시계 옆 알림 영역으로 내려갑니다. 끄려면 거기서 종료를 고르면 됩니다.
+
+카메라 비밀번호와 ntfy 토픽은 `rtsp.env`, `ntfy.env`에만 적습니다. 저장소에 올리지 마세요. 빈 양식은 `rtsp.env.example`, `ntfy.env.example`입니다.
+
+창 없이 명령만 쓰려면 이렇게 합니다.
 
 ```text
 python watch.py --image photo.jpg
 python watch.py --rtsp --send
 ```
 
-푸시는 `--send`(GUI의 푸시 체크)일 때만 나갑니다.
+`--send`를 빼면 휴대전화로 가지 않습니다. 창의 푸시 칸과 같은 뜻입니다.
 
-## 문서
+## 자세한 설명
 
-자세한 내용은 주제별 파일입니다. 기능을 없애면 그 파일만 지웁니다.
+- [설치](docs/setup.md)
+- [어떻게 돌아가나](docs/how-it-works.md)
+- [판정 규칙](docs/rules.md)
+- [환경 변수](docs/settings.md)
+- [알림이 나가는 방식](docs/alerts.md)
+- [점수 기록](docs/score-log.md)
+- [사진 폴더 채점](docs/score-folder.md)
+- [원격 Jev](docs/remote-jev.md)
+- [한계](docs/limits.md)
+- [안 될 때](docs/troubleshooting.md)
+- [비밀을 공개 이슈에 적지 말 것](SECURITY.md)
 
-- [하는 일](docs/what.md) · [동작 방식](docs/how-it-works.md) · [판정 규칙](docs/rules.md)
-- [설치와 실행](docs/setup.md) · [필요한 것](docs/requirements.md) · [설정](docs/settings.md)
-- [알림](docs/alerts.md) · [점수 기록](docs/score-log.md) · [사진 폴더](docs/score-folder.md)
-- [원격 Jev](docs/remote-jev.md) · [파일](docs/files.md) · [보안](docs/privacy.md)
-- [한계](docs/limits.md) · [문제 해결](docs/troubleshooting.md) · [검증](docs/verification.md)
-- [SECURITY.md](SECURITY.md)
-
-## License
-
-[MIT](LICENSE).
+라이선스는 [MIT](LICENSE)입니다.
