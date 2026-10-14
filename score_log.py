@@ -28,8 +28,7 @@ DIR = Path(__file__).resolve().parent
 MAX_BYTES = 5 * 1024 * 1024
 KEEP = 3  # current file + .1 + .2
 DEFAULT_MAX_FRAMES = 200
-_RULES = ("face_cover", "face_down", "climbing")
-_PARTS = ("face_down_cheek", "face_down_back", "face_down_belly")
+_RULES = ("face_cover", "climbing")
 _OFF = {"off", "0", "false", "no", "none", "disabled"}
 _ON = {"1", "true", "yes", "on"}
 _lock = threading.Lock()
@@ -186,7 +185,6 @@ def log_judgment(result, model: str, source: str, image=None, image_name: str | 
         now = datetime.now().astimezone()
         row_id = secrets.token_hex(3)
         scores = result.get("scores") if isinstance(result.get("scores"), dict) else {}
-        parts = result.get("face_down_parts") if isinstance(result.get("face_down_parts"), dict) else {}
         frame = None
         try:
             if _want_frame(scores):
@@ -200,7 +198,6 @@ def log_judgment(result, model: str, source: str, image=None, image_name: str | 
             "source": source,
             "model": model,
             "scores": scores,
-            "face_down_parts": parts,
             "thresholds": _thresholds(model),
             "alert": bool(result.get("should_alert")),
             "rule": result.get("rule"),
@@ -260,12 +257,11 @@ def add_label(row_id: str, text: str, path: Path | None = None) -> bool:
     return True
 
 
-_COLS = ("time", "id", "model", "face_down", "cheek", "back", "belly", "mouth_nose", "alert", "frame", "label")
+_COLS = ("time", "id", "model", "mouth_nose", "climbing", "alert", "frame", "label")
 
 
 def _cells(r: dict, full_time: bool) -> list[str]:
     s = r.get("scores") or {}
-    p = r.get("face_down_parts") or {}
 
     def num(d, k):
         v = d.get(k)
@@ -274,9 +270,8 @@ def _cells(r: dict, full_time: bool) -> list[str]:
     t = str(r.get("time", ""))
     if not full_time:
         t = t[5:19].replace("T", " ")
-    return [t, str(r.get("id", "")), str(r.get("model", "")), num(s, "face_down"),
-            num(p, "face_down_cheek"), num(p, "face_down_back"), num(p, "face_down_belly"),
-            num(s, "face_cover"), "ALERT" if r.get("alert") else "-",
+    return [t, str(r.get("id", "")), str(r.get("model", "")), num(s, "face_cover"),
+            num(s, "climbing"), "ALERT" if r.get("alert") else "-",
             "y" if r.get("frame") else "-", str(r.get("label") or "")]
 
 
@@ -393,8 +388,7 @@ def _self_check() -> None:
     saved_env = {k: os.environ.pop(k, None) for k in keys}
     saved_max = MAX_BYTES
     verdict = {"should_alert": False, "rule": None, "reason": "r",
-               "scores": {"face_cover": 0.05, "face_down": 0.35, "climbing": 0.02, "baby_present": 0.9},
-               "face_down_parts": {"face_down_cheek": 0.2, "face_down_back": 0.72, "face_down_belly": 0.35}}
+               "scores": {"face_cover": 0.35, "climbing": 0.02, "baby_present": 0.9}}
     img = Image.new("RGB", (16, 12), (9, 9, 9))
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -404,19 +398,18 @@ def _self_check() -> None:
             rid = log_judgment(verdict, "jev", "gui-test", img, "a.jpg")
             row = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
             assert rid == row["id"] and len(rid) == 6 and row["source"] == "gui-test" and row["model"] == "jev"
-            assert row["face_down_parts"]["face_down_back"] == 0.72 and row["scores"]["face_down"] == 0.35
-            assert row["thresholds"]["face_down"] == 0.60 and row["alert"] is False
+            assert row["scores"]["face_cover"] == 0.35
+            assert row["thresholds"]["face_cover"] == 0.60 and row["alert"] is False
             assert row["image"] == "a.jpg" and row["frame"] is None and row["time"][-6] in "+-"
             assert not (log.parent / "frames").exists()  # frames default OFF
-            assert verdict["scores"]["face_down"] == 0.35  # result not mutated
+            assert verdict["scores"]["face_cover"] == 0.35  # result not mutated
             # qwen row has no scores: still logged, '-' in table
             log_judgment({"should_alert": True, "rule": "face_cover", "reason": "x"}, "qwen", "watch")
             rows = read_rows(log)
             assert len(rows) == 2 and rows[1]["thresholds"] is None and rows[1]["alert"] is True
             text = render(rows)
-            assert "face_down" in text.splitlines()[0] and "0.35" in text and "ALERT" in text
-            assert text.splitlines()[1].split()[4:8] == ["0.35", "0.20", "0.72", "0.35"]
-            assert render(rows, as_csv=True).splitlines()[0].startswith("time,id,model,face_down,cheek")
+            assert "mouth_nose" in text.splitlines()[0] and "0.35" in text and "ALERT" in text
+            assert render(rows, as_csv=True).splitlines()[0].startswith("time,id,model,mouth_nose,climbing")
             # labels: append-only, latest wins, unknown id refused
             size = log.stat().st_size
             head = log.read_bytes()
@@ -429,15 +422,15 @@ def _self_check() -> None:
             os.environ["CRIB_LOG_SAVE_AMBIGUOUS"] = "0.3-0.7"
             os.environ["CRIB_LOG_MAX_FRAMES"] = "2"
             for _ in range(4):
-                log_judgment(verdict, "jev", "watch", img)  # face_down 0.35 is inside
+                log_judgment(verdict, "jev", "watch", img)  # face_cover 0.35 is inside
                 time.sleep(0.003)
             frames = sorted((log.parent / "frames").glob("*.jpg"))
             assert len(frames) == 2, frames
             last = read_rows(log)[-1]
             assert last["frame"] == frames[-1].name and Image.open(frames[-1]).size == (16, 12)
             n = len(list((log.parent / "frames").glob("*.jpg")))
-            quiet = dict(verdict, scores={"face_cover": 0.05, "face_down": 0.9, "climbing": 0.0})
-            quiet2 = dict(verdict, scores={"face_cover": 0.05, "face_down": 0.1, "climbing": 0.0})
+            quiet = dict(verdict, scores={"face_cover": 0.9, "climbing": 0.0})
+            quiet2 = dict(verdict, scores={"face_cover": 0.1, "climbing": 0.0})
             log_judgment(quiet, "jev", "watch", img); log_judgment(quiet2, "jev", "watch", img)
             assert len(list((log.parent / "frames").glob("*.jpg"))) == n and read_rows(log)[-1]["frame"] is None
             os.environ["CRIB_LOG_SAVE_FRAMES"] = "1"

@@ -13,7 +13,7 @@ Uses the same call as the GUI single-photo test (crib_gui.py _run_test): the pho
 Image.open(path).convert("RGB") and judged with judge.ask under CRIB_MODEL=<model>. No HTTP code here.
 It sends NO push, writes NO ticks/status/frames/latest.jpg and NO score log. Only --csv writes a file.
 Expected tag comes from the filename prefix (엎드림_ 정상_ 옆으로_ 앉음_ 안김_ 빈침대_ / prone_ normal_ side_ sitting_ held_ empty_).
-The threshold range it prints is only a hint. Nothing is applied. Not a medical device.
+엎드림/prone is treated as an expected-high face_cover group. The threshold range it prints is only a hint.
 """
 
 from __future__ import annotations
@@ -37,8 +37,7 @@ PREFIXES = {
     "빈침대": "empty", "empty": "empty",
 }
 TAG_ORDER = ("prone", "normal", "side", "sitting", "held", "empty", "?")
-COLS = ("filename", "face_down", "cheek", "back", "belly", "face_cover", "climbing",
-        "baby", "adult", "face", "alert", "expected")
+COLS = ("filename", "face_cover", "climbing", "baby", "adult", "face", "alert", "expected")
 HINT_WARNING = "이 범위는 참고용 힌트일 뿐입니다. 자동으로 적용하지 않습니다 (임계값은 그대로)."
 
 
@@ -59,13 +58,9 @@ def _num(v):
 
 def _row_from(name: str, result: dict) -> dict:
     s = result.get("scores") if isinstance(result.get("scores"), dict) else {}
-    p = result.get("face_down_parts") if isinstance(result.get("face_down_parts"), dict) else {}
     return {
         "name": name, "tag": expected_tag(name), "error": None,
-        "face_down": _num(s.get("face_down")), "cheek": _num(p.get("face_down_cheek")),
-        "back": _num(p.get("face_down_back")), "belly": _num(p.get("face_down_belly")),
         "face_cover": _num(s.get("face_cover")), "climbing": _num(s.get("climbing")),
-        # Jev gives scores; Qwen only gives yes/no
         "baby": _num(s.get("baby_present")) if "baby_present" in s else result.get("baby_present"),
         "adult": _num(s.get("adult_present")) if "adult_present" in s else None,
         "face": _num(s.get("face_visible")) if "face_visible" in s else result.get("face_visible"),
@@ -74,8 +69,7 @@ def _row_from(name: str, result: dict) -> dict:
 
 
 def _error_row(name: str, exc: BaseException) -> dict:
-    row = {k: None for k in ("face_down", "cheek", "back", "belly", "face_cover", "climbing",
-                             "baby", "adult", "face", "rule")}
+    row = {k: None for k in ("face_cover", "climbing", "baby", "adult", "face", "rule")}
     row.update(name=name, tag=expected_tag(name), alert=None,
                error=f"{type(exc).__name__}: {exc}"[:200])
     return row
@@ -116,8 +110,7 @@ def _cell(v) -> str:
 
 def _cells(r: dict) -> list[str]:
     alert = "ERR" if r["error"] else _cell(r["alert"])
-    return [r["name"]] + [_cell(r[k]) for k in ("face_down", "cheek", "back", "belly", "face_cover",
-            "climbing", "baby", "adult", "face")] + [alert, r["tag"]]
+    return [r["name"]] + [_cell(r[k]) for k in ("face_cover", "climbing", "baby", "adult", "face")] + [alert, r["tag"]]
 
 
 def _width(s: str) -> int:
@@ -145,30 +138,29 @@ def _stats(vals: list[float]) -> str:
 
 
 def suggest(rows: list[dict]) -> tuple[str, tuple[float, float] | None]:
-    prone = [r["face_down"] for r in rows if r["tag"] == "prone" and r["face_down"] is not None]
-    other = [r["face_down"] for r in rows if r["tag"] not in ("prone", "?") and r["face_down"] is not None]
+    prone = [r["face_cover"] for r in rows if r["tag"] == "prone" and r["face_cover"] is not None]
+    other = [r["face_cover"] for r in rows if r["tag"] not in ("prone", "?") and r["face_cover"] is not None]
     if len(prone) < MIN_GROUP or len(other) < MIN_GROUP:
         return f"not enough photos (need >={MIN_GROUP} per group)", None
     lo, hi = max(other), min(prone)
-    if lo >= hi:  # no threshold t can have every non-prone < t <= every prone
+    if lo >= hi:
         return f"not separable (non-prone max {lo:.2f} >= prone min {hi:.2f})", None
-    return f"face_down threshold between {lo:.2f} (exclusive) and {hi:.2f} (inclusive)", (lo, hi)
+    return f"face_cover threshold between {lo:.2f} (exclusive) and {hi:.2f} (inclusive)", (lo, hi)
 
 
 def render_summary(rows: list[dict], current: float | None = None) -> str:
     lines = ["", "summary per expected tag (min/mean/max)",
-             f"{'tag':<8}{'n':>3}  {'face_down':<17}{'face_cover':<17}"]
+             f"{'tag':<8}{'n':>3}  {'face_cover':<17}"]
     for tag in TAG_ORDER:
         sel = [r for r in rows if r["tag"] == tag and not r["error"]]
         if not sel:
             continue
-        fd = [r["face_down"] for r in sel if r["face_down"] is not None]
         fc = [r["face_cover"] for r in sel if r["face_cover"] is not None]
-        lines.append(f"{tag:<8}{len(sel):>3}  {_stats(fd):<17}{_stats(fc):<17}".rstrip())
+        lines.append(f"{tag:<8}{len(sel):>3}  {_stats(fc):<17}".rstrip())
     msg, _ = suggest(rows)
     lines.append("")
     if current is not None:
-        lines.append(f"current face_down alert threshold: {current:.2f}")
+        lines.append(f"current face_cover alert threshold: {current:.2f}")
     lines.append(f"suggested {msg}")
     lines.append(HINT_WARNING)
     return "\n".join(lines) + "\n"
@@ -212,7 +204,7 @@ def run(folder: Path, model: str, csv_path: Path | None = None, ask_fn=None, out
                 out.write(f"backend: remote ({mask_host(ep.host)}) - {destination_for_scope(host_scope(ep.host))}\n")
             from jev_protocol import alert_at
 
-            current = alert_at("face_down")  # SystemExit with a clear message on a bad env value
+            current = alert_at("face_cover")  # SystemExit with a clear message on a bad env value
         rows = score_folder(folder, ask_fn or default_ask(model))
     finally:
         if prev is None:
@@ -264,16 +256,15 @@ def _selftest() -> None:
         assert expected_tag("x_1.jpg") == "?" and expected_tag("prone.jpg") == "?" and expected_tag("normal1.jpg") == "?"
         from jev_protocol import verdict_from_answers
 
-        def stub(image):  # red channel = face_down, green = face_cover; blue 255 = server failure
+        def stub(image):  # red channel = face_cover; blue 255 = server failure
             r, g, b = image.getpixel((0, 0))
             if b > 200:
                 raise RuntimeError("server said no")
-            v, c = r / 255, g / 255
+            c = r / 255
             noul = lambda x: {"type": "noul", "noul": x}  # noqa: E731
             return verdict_from_answers({
                 "baby_present": noul(0.9), "adult_present": noul(0.1), "face_visible": noul(0.8),
-                "face_cover": noul(c), "face_down_cheek": noul(v), "face_down_back": noul(v),
-                "face_down_belly": noul(0.0), "climbing": noul(0.0)})
+                "face_cover": noul(c), "climbing": noul(0.0)})
 
         def put(folder, name, r, g=0, b=0):
             Image.new("RGB", (8, 8), (r, g, b)).save(folder / name, "JPEG", quality=100)
@@ -284,8 +275,8 @@ def _selftest() -> None:
             for i, v in enumerate((180, 200, 220, 230, 245)):
                 put(d, f"엎드림_{i}.jpg", v)
             for i, v in enumerate((10, 40, 70, 90, 100)):
-                put(d, f"normal_{i}.jpg", v, 20)
-            put(d, "정상_cover.jpg", 10, 240)
+                put(d, f"normal_{i}.jpg", v)
+            put(d, "정상_cover.jpg", 10)
             put(d, "mystery.jpg", 120)
             put(d, "앉음_err.jpg", 0, 0, 255)  # stub raises
             (d / "정상_broken.jpg").write_bytes(b"not a jpeg")
@@ -309,27 +300,25 @@ def _selftest() -> None:
 
             f2 = lambda x: f"{x:.2f}"  # noqa: E731
             assert by["엎드림_4.jpg"][1] == f2(px("엎드림_4.jpg")) == "0.96"
-            assert by["엎드림_4.jpg"][10] == "yes" and by["엎드림_4.jpg"][11] == "prone"
-            assert by["엎드림_0.jpg"][1] == f2(px("엎드림_0.jpg")) and by["엎드림_0.jpg"][10] == "yes"  # >= 0.60
-            assert by["normal_4.jpg"][1] == f2(px("normal_4.jpg")) and by["normal_4.jpg"][10] == "no"
-            v0 = f2(px("normal_0.jpg"))
-            assert by["normal_0.jpg"][2:5] == [v0, v0, "0.00"]  # cheek back belly
-            assert by["정상_cover.jpg"][5] == f2(px("정상_cover.jpg", 1)) and by["정상_cover.jpg"][10] == "yes"  # face_cover rule
-            assert by["mystery.jpg"][11] == "?" and by["앉음_err.jpg"][10] == "ERR" and by["정상_broken.jpg"][10] == "ERR"
-            assert by["엎드림_0.jpg"][7:10] == ["0.90", "0.10", "0.80"]  # baby adult face
+            assert by["엎드림_4.jpg"][6] == "yes" and by["엎드림_4.jpg"][7] == "prone"
+            assert by["엎드림_0.jpg"][1] == f2(px("엎드림_0.jpg")) and by["엎드림_0.jpg"][6] == "yes"  # >= 0.60
+            assert by["normal_4.jpg"][1] == f2(px("normal_4.jpg")) and by["normal_4.jpg"][6] == "no"
+            assert by["정상_cover.jpg"][1] == f2(px("정상_cover.jpg")) and by["정상_cover.jpg"][6] == "no"
+            assert by["mystery.jpg"][7] == "?" and by["앉음_err.jpg"][6] == "ERR" and by["정상_broken.jpg"][6] == "ERR"
+            assert by["엎드림_0.jpg"][3:6] == ["0.90", "0.10", "0.80"]  # baby adult face
             assert "error  앉음_err.jpg: RuntimeError: server said no" in text
             assert "error  정상_broken.jpg:" in text
-            assert "current face_down alert threshold: 0.60" in text
+            assert "current face_cover alert threshold: 0.60" in text
             summary = text.split("summary per expected tag")[1]
             pv = [px(f"엎드림_{i}.jpg") for i in range(5)]
             assert f"{min(pv):.2f}/{sum(pv) / 5:.2f}/{max(pv):.2f}" in summary, summary
-            nmax = max(px(f"normal_{i}.jpg") for i in range(5))  # 정상_cover (face_down ~0.04) is lower
-            assert f"suggested face_down threshold between {nmax:.2f} (exclusive) and {min(pv):.2f} (inclusive)" in text
+            nmax = max(px(f"normal_{i}.jpg") for i in range(5))
+            assert f"suggested face_cover threshold between {nmax:.2f} (exclusive) and {min(pv):.2f} (inclusive)" in text
             assert "참고용 힌트" in text
             sline = [ln for ln in summary.splitlines() if ln.startswith("normal")][0].split()
             assert sline[1] == "6", sline  # 5 normal_ + 정상_cover (broken one is an error, not counted)
             rows_csv = list(csv.reader(io.StringIO(out_csv.read_text(encoding="utf-8-sig"))))
-            assert rows_csv[0][:2] == ["filename", "face_down"] and rows_csv[0][-2:] == ["rule", "error"]
+            assert rows_csv[0][:2] == ["filename", "face_cover"] and rows_csv[0][-2:] == ["rule", "error"]
             assert len(rows_csv) == 15 and any("server said no" in r[-1] for r in rows_csv)
             assert out_csv.read_bytes().startswith(b"\xef\xbb\xbf")
             # the >=5 rule
@@ -345,14 +334,13 @@ def _selftest() -> None:
             put(small, "prone_4.jpg", 240)
             assert "not enough photos" not in (lambda b: (run(small, "jev", None, ask_fn=stub, out=b), b.getvalue())[1])(io.StringIO())
             # overlap -> not separable; unit-level
-            ov = [{"tag": "prone", "face_down": v} for v in (0.5, 0.6, 0.7, 0.8, 0.9)] + \
-                 [{"tag": "normal", "face_down": v} for v in (0.1, 0.2, 0.3, 0.4, 0.65)]
+            ov = [{"tag": "prone", "face_cover": v} for v in (0.5, 0.6, 0.7, 0.8, 0.9)] + \
+                 [{"tag": "normal", "face_cover": v} for v in (0.1, 0.2, 0.3, 0.4, 0.65)]
             assert suggest(ov)[0].startswith("not separable") and suggest(ov)[1] is None
-            eq = [{"tag": "prone", "face_down": 0.6}] * 5 + [{"tag": "held", "face_down": 0.6}] * 5
+            eq = [{"tag": "prone", "face_cover": 0.6}] * 5 + [{"tag": "held", "face_cover": 0.6}] * 5
             assert suggest(eq)[1] is None  # equal is not separable either
-            # non-prone group counts all non-prone tags, unknown tags count for neither
-            mix = [{"tag": "prone", "face_down": 0.9}] * 5 + [{"tag": "side", "face_down": 0.2}] * 3 + \
-                  [{"tag": "held", "face_down": 0.3}] * 2 + [{"tag": "?", "face_down": 0.95}] * 4
+            mix = [{"tag": "prone", "face_cover": 0.9}] * 5 + [{"tag": "side", "face_cover": 0.2}] * 3 + \
+                  [{"tag": "held", "face_cover": 0.3}] * 2 + [{"tag": "?", "face_cover": 0.95}] * 4
             assert suggest(mix)[1] == (0.3, 0.9)
             # empty / missing folder / all failing
             assert run(Path(tmp) / "nope", "jev", None, out=io.StringIO()) == 2
@@ -360,10 +348,10 @@ def _selftest() -> None:
             empty.mkdir()
             assert run(empty, "jev", None, out=io.StringIO()) == 2
             # Qwen style result (no scores): rendered with '-' and yes/no, never crashes
-            q = lambda image: {"should_alert": True, "baby_present": True, "face_visible": False, "rule": "face_down"}  # noqa: E731
+            q = lambda image: {"should_alert": True, "baby_present": True, "face_visible": False, "rule": "face_cover"}  # noqa: E731
             buf = io.StringIO()
             assert run(small, "qwen", None, ask_fn=q, out=buf) == 0
-            assert "face_down" in buf.getvalue() and "not enough photos" in buf.getvalue()
+            assert "face_cover" in buf.getvalue() and "not enough photos" in buf.getvalue()
             assert os.environ.get("CRIB_MODEL") is None  # restored
             # a bad CRIB_MODEL through the real path: judge.ask rejects, rows are errors, exit 1
             real = io.StringIO()

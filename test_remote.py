@@ -32,8 +32,7 @@ TOKEN = "tkn_Zx81QvLmN0pRsT4uVwYz_secret-VALUE"
 COVER = {
     "baby_present": {"type": "noul", "noul": 0.96}, "adult_present": {"noul": 0.02},
     "face_visible": {"noul": 0.10}, "face_cover": {"noul": 0.91},
-    "face_down_cheek": {"noul": 0.04}, "face_down_back": {"noul": 0.02},
-    "face_down_belly": {"noul": 0.03}, "climbing": {"noul": 0.03},
+    "climbing": {"noul": 0.03},
 }
 QUIET = {k: {"noul": 0.5} for k in COVER}
 

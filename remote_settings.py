@@ -16,6 +16,7 @@ best effort). Env overrides the file. The file only counts when its CRIB_JEV_BAC
   CRIB_JEV_TOKEN        bearer token, sent only in the Authorization header. Colab prints one.
   CRIB_JEV_TIMEOUT      seconds per request (remote only), default = caller's timeout (180)
   CRIB_JEV_REMOTE_LIVE  1 = live watch may use remote too. Default 0: live watch stays local.
+  CRIB_JEV_ENGINE       imajev (default) | d1   local process only; Colab is unchanged.
 
 The token and the full URL are never put into error text or logs. Use mask_host().
 Self-test: python remote_settings.py
@@ -33,7 +34,8 @@ from urllib.parse import urlparse
 
 DIR = Path(__file__).resolve().parent
 ENV_FILE = DIR / "crib_remote.env"
-KEYS = ("CRIB_JEV_BACKEND", "CRIB_JEV_URL", "CRIB_JEV_TOKEN", "CRIB_JEV_TIMEOUT", "CRIB_JEV_REMOTE_LIVE")
+KEYS = ("CRIB_JEV_BACKEND", "CRIB_JEV_URL", "CRIB_JEV_TOKEN", "CRIB_JEV_TIMEOUT", "CRIB_JEV_REMOTE_LIVE",
+        "CRIB_JEV_ENGINE")
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 DEFAULT_PATH = "/v1/systemone"
 _PRIVATE_NETS = tuple(ipaddress.ip_network(n) for n in (
@@ -250,10 +252,12 @@ class Settings:
     token: str = ""
     timeout: str = ""
     remote_live: bool = False
+    engine: str = "imajev"       # 'imajev' | 'd1'  (local Jev process; ignored when remote)
 
     def __repr__(self) -> str:  # never show the token or URL
         return (f"Settings(backend={self.backend!r}, host={mask_host(self.url)!r}, "
-                f"token={'set' if self.token else 'unset'}, remote_live={self.remote_live})")
+                f"token={'set' if self.token else 'unset'}, remote_live={self.remote_live}, "
+                f"engine={self.engine!r})")
 
     @property
     def remote_url_configured(self) -> bool:
@@ -283,12 +287,20 @@ def load(environ=None, path: Path | None = None) -> Settings:
             v = (file_vals.get(key) or "").strip() or None
         return v or ""
 
+    engine_raw = env("CRIB_JEV_ENGINE")
+    if engine_raw is None:
+        engine_raw = (file_vals.get("CRIB_JEV_ENGINE") or "").strip() or None
+    engine = (engine_raw or "imajev").lower()
+    if engine not in ("imajev", "d1"):
+        engine = "imajev"
+
     return Settings(
         backend=backend,
         url=pick("CRIB_JEV_URL"),
         token=pick("CRIB_JEV_TOKEN"),
         timeout=pick("CRIB_JEV_TIMEOUT"),
         remote_live=pick("CRIB_JEV_REMOTE_LIVE").lower() in _TRUE,
+        engine=engine,
     )
 
 
@@ -297,13 +309,17 @@ def validate(s: Settings) -> Settings:
     parse_timeout(s.timeout)
     u = parse_url(s.url)
     return Settings(s.backend, validate_url(s.url), validate_token(s.token, u.token_required),
-                    s.timeout.strip(), s.remote_live)
+                    s.timeout.strip(), s.remote_live, s.engine)
 
 
-def settings_from_form(backend: str, url: str, token: str, timeout: str = "", live: bool = False) -> Settings:
+def settings_from_form(backend: str, url: str, token: str, timeout: str = "", live: bool = False,
+                      engine: str = "imajev") -> Settings:
     """GUI form values -> Settings (stripped, not validated). Anything but 'remote' means local."""
+    name = (engine or "imajev").strip().lower()
+    if name not in ("imajev", "d1"):
+        name = "imajev"
     return Settings("remote" if backend == "remote" else "local", (url or "").strip(), (token or "").strip(),
-                    (timeout or "").strip(), bool(live))
+                    (timeout or "").strip(), bool(live), name)
 
 
 def env_overrides(environ=None) -> list[str]:
@@ -326,6 +342,8 @@ def status_line(settings: Settings, kind: str = "jev") -> str:
     if not settings.remote_url_configured:
         if settings.backend == "remote":
             return "판정 백엔드: 로컬 (원격으로 선택했지만 주소가 없음 → 로컬 사용)"
+        if settings.engine == "d1":
+            return "판정 백엔드: 로컬 (d1-omni, 127.0.0.1)"
         return "판정 백엔드: 로컬 (127.0.0.1)"
     host = mask_host(settings.url)
     where = photo_destination(settings.url)
@@ -347,6 +365,7 @@ def render_file(s: Settings) -> str:
     if s.timeout.strip():
         lines.append(f"CRIB_JEV_TIMEOUT={s.timeout.strip()}")
     lines.append(f"CRIB_JEV_REMOTE_LIVE={'1' if s.remote_live else '0'}")
+    lines.append(f"CRIB_JEV_ENGINE={s.engine if s.engine in ('imajev', 'd1') else 'imajev'}")
     return "\n".join(lines) + "\n"
 
 
@@ -510,6 +529,11 @@ def _self_check() -> None:
         # file says local: remote keys in the file are ignored (kept for later)
         save(Settings("local", want.url, secret, "", False), path)
         assert load({}, path).url == "" and not load({}, path).remote_url_configured
+        save(Settings("local", "", "", "", False, "d1"), path)
+        d1 = load({}, path)
+        assert d1.engine == "d1" and d1.backend == "local"
+        assert status_line(d1) == "판정 백엔드: 로컬 (d1-omni, 127.0.0.1)"
+        assert load({"CRIB_JEV_ENGINE": "imajev"}, path).engine == "imajev"
         # file says remote: env overrides file
         save(want, path)
         over = load({"CRIB_JEV_URL": "https://other.example.com", "CRIB_JEV_TOKEN": "envtoken123"}, path)

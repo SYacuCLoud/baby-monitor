@@ -34,9 +34,9 @@ def _jpeg_b64(image: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-ALLOWED = frozenset({"face_cover", "face_down", "climbing", "empty"})
+ALLOWED = frozenset({"face_cover", "climbing", "empty"})
 # Only climbing needs a visible baby. A baby fully under a blanket may be reported as
-# "not present", and face_cover / face_down must still alert then.
+# "not present", and face_cover must still alert then.
 NEED_PERSON = frozenset({"climbing"})
 NOT_VISIBLE_NOTE = "아기가 안 보임"
 COPY_RE = re.compile(
@@ -104,7 +104,7 @@ def normalize(data: dict) -> dict:
     if alert and rule == "empty" and present:
         alert = False
         rule = None
-    if alert and rule in ("face_cover", "face_down") and not present:
+    if alert and rule == "face_cover" and not present:
         reason = f"{NOT_VISIBLE_NOTE}. {reason}" if reason else NOT_VISIBLE_NOTE
     return {
         "should_alert": alert,

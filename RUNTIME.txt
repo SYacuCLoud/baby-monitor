@@ -1,0 +1,11 @@
+서버 시작이 부르는 파일은 전부 runtime/ 아래입니다.
+
+runtime/imajev/.venv/Scripts/python.exe
+  Jev. imajev_serve.py 와 같이 실행.
+
+runtime/llama-server/llama-server.exe
+  Qwen. dll 도 같은 폴더.
+
+runtime/models/Qwen3-VL-4B
+  Qwen GGUF (정션)
+

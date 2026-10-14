@@ -16,7 +16,6 @@ TITLE = "아기"
 # JSON rule -> lock-screen line. Keep short.
 RULE_LINE = {
     "face_cover": "입코 가림",
-    "face_down": "얼굴 파묻힘",
     "climbing": "난간 기어오름",
     "empty": "아기 없음",
 }

@@ -2,13 +2,8 @@
 
 Starts watch.py and the selected model server. The photo stays in this window.
 ntfy still gets text only, and only if 푸시 is on. Secrets in rtsp.env and
-ntfy.env are not shown or edited.
-
-"Jev 서버" panel: local (default) or a remote Jev-compatible web API server (e.g. Colab). The logic lives in
-remote_settings.py (settings file crib_remote.env, validation, connection test); this file only
-draws it. The token is masked (show toggle) and only stored in crib_remote.env (0600 best effort).
-Remote is used by the photo tests; live watch uses it only with the extra checkbox
-"실시간 감시에도 원격 사용". The tkinter UI was NOT run by the author (no tkinter on the dev box).
+ntfy.env are not shown or edited. Local only: no Colab panel.
+Left: model, watch, test. Right: photo and tick log.
 """
 
 from __future__ import annotations
@@ -26,7 +21,6 @@ from tkinter import filedialog, ttk
 
 from PIL import Image, ImageTk
 
-import proc_stop
 import remote_settings
 from judge import model_kind
 from jev_protocol import ALERT_AT
@@ -40,9 +34,12 @@ PORTS = {"jev": 8090, "qwen": 8080}
 HISTORY = 50
 PREVIEW = 720
 
-IMAJEV_PY = Path(os.environ.get("IMAJEV_PY", r"D:\Dev\imajev\.venv\Scripts\python.exe"))
-LLAMA = Path(os.environ.get("LLAMA_SERVER", r"D:\Dev\llama.cpp\llama-server.exe"))
-QWEN_DIR = Path(os.environ.get("QWEN_DIR", r"D:\Dev\_Models\Qwen3-VL-4B"))
+IMAJEV_PY = Path(os.environ.get("IMAJEV_PY", str(DIR / "runtime" / "imajev" / ".venv" / "Scripts" / "python.exe")))
+LLAMA = Path(os.environ.get("LLAMA_SERVER", str(DIR / "runtime" / "llama-server" / "llama-server.exe")))
+QWEN_DIR = Path(os.environ.get("QWEN_DIR", str(DIR / "runtime" / "models" / "Qwen3-VL-4B")))
+
+_NO_WINDOW = 0x08000000
+_NEW_GROUP = 0x00000200
 
 
 def tail_ticks(path: Path, n: int = HISTORY) -> list[dict]:
@@ -69,7 +66,6 @@ def format_tick(row: dict) -> str:
 
 RULE_KO = {
     "face_cover": "입코 가림",
-    "face_down": "엎드림",
     "climbing": "난간",
     "empty": "아무도 없음",
 }
@@ -100,19 +96,9 @@ def verdict_text(row: dict | None) -> tuple[str, str]:
     scores = row.get("scores") if isinstance(row.get("scores"), dict) else None
     nums = []
     if scores:
-        order = ("face_cover", "face_down", "climbing", "baby_present", "adult_present", "face_visible")
+        order = ("face_cover", "climbing", "baby_present", "adult_present", "face_visible")
         names = {"baby_present": "아기", "adult_present": "어른", "face_visible": "얼굴", **RULE_KO}
         nums = [f"{names.get(key, key)} {float(scores[key]):.2f}" for key in order if key in scores]
-        parts = row.get("face_down_parts") if isinstance(row.get("face_down_parts"), dict) else None
-        if parts and "face_down" in scores:
-            cues = (("face_down_cheek", "볼"), ("face_down_back", "등"), ("face_down_belly", "배"))
-            try:
-                text = " / ".join(f"{ko} {float(parts[key]):.2f}" for key, ko in cues if key in parts)
-            except (TypeError, ValueError):
-                text = ""
-            if text:  # absent for qwen or old results
-                i = next(i for i, n in enumerate(nums) if n.startswith(RULE_KO["face_down"]))
-                nums[i] += f"  ({text})"
     detail = ". ".join(bits)
     if nums:
         detail = (detail + "\n" if detail else "") + "\n".join(nums) + f"\n알림 기준 {ALERT_AT:.2f}"
@@ -186,19 +172,19 @@ def server_argv(kind: str) -> list[str]:
     raise ValueError(kind)
 
 
-def server_missing(kind: str) -> str | None:
-    argv = server_argv(kind)
-    if not Path(argv[0]).is_file():
-        return f"실행 파일이 없습니다: {argv[0]}"
-    return None
-
-
 def can_start_server(kind: str, own_open: bool, other_open: bool) -> str | None:
     if own_open:
         return "이미 켜져 있습니다."
     if other_open:
         return "다른 모델 서버가 켜져 있습니다. 8GB라 같이 못 올립니다."
     return server_missing(kind)
+
+
+def server_missing(kind: str) -> str | None:
+    argv = server_argv(kind)
+    if not Path(argv[0]).is_file():
+        return f"실행 파일이 없습니다: {argv[0]}"
+    return None
 
 
 def watch_argv(send: bool) -> list[str]:
@@ -209,7 +195,10 @@ def watch_argv(send: bool) -> list[str]:
 
 
 def listening_pid(port: int) -> int | None:
-    out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, errors="replace")
+    out = subprocess.check_output(
+        ["netstat", "-ano", "-p", "tcp"],
+        text=True, errors="replace", timeout=2,
+    )
     for line in out.splitlines():
         if "LISTENING" not in line:
             continue
@@ -224,8 +213,9 @@ def listening_pid(port: int) -> int | None:
 
 def process_command(pid: int) -> str:
     out = subprocess.check_output(
-        ["powershell", "-NoProfile", "-Command", f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"],
-        text=True, errors="replace",
+        ["powershell", "-NoProfile", "-Command",
+         f"(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine"],
+        text=True, errors="replace", timeout=3,
     )
     return out.strip()
 
@@ -234,6 +224,26 @@ def allowed_stop(kind: str, command: str) -> bool:
     if kind == "jev":
         return "imajev_serve.py" in command
     return "llama-server" in command.replace("\\", "/")
+
+
+def kill_tree(pid: int) -> None:
+    subprocess.run(
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        check=False, creationflags=_NO_WINDOW,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8,
+    )
+
+
+def control_state(server: str, watching: bool, busy: bool, testing: bool) -> dict[str, bool]:
+    idle = not busy and not testing
+    return {
+        "server_start": idle and server in ("꺼짐", "실패"),
+        "server_stop": idle and server in ("켜짐", "켜는 중"),
+        "watch_start": idle and server == "켜짐" and not watching,
+        "watch_stop": idle and watching,
+        "radios": idle and server not in ("켜는 중", "끄는 중"),
+        "test": idle and server == "켜짐",
+    }
 
 
 def read_status(path: Path = STATUS) -> dict | None:
@@ -319,6 +329,11 @@ class App:
         self._hold_at = 0.0
         self._status_hold = False
         self._testing = False
+        self._busy = False
+        self._stopping_server = False
+        self._alive = True
+        self._ports = {"jev": False, "qwen": False}
+        self._server_state = "꺼짐"
         self.tray: Tray | None = None
         root.title("아기 감시")
         root.protocol("WM_DELETE_WINDOW", self.to_tray)
@@ -327,148 +342,138 @@ class App:
             self.tray = Tray(self.toggle_tray, self.quit_app)
         except Exception as exc:
             self.note.set(f"트레이를 만들지 못했습니다: {type(exc).__name__}")
+        threading.Thread(target=self._poll_ports, daemon=True).start()
         self.refresh()
 
     def _build(self) -> None:
-        top = ttk.Frame(self.root, padding=8)
-        top.pack(fill="x")
-        ttk.Radiobutton(top, text="jev", variable=self.kind, value="jev", command=self.on_model).pack(side="left")
-        ttk.Radiobutton(top, text="qwen", variable=self.kind, value="qwen", command=self.on_model).pack(side="left")
-        ttk.Button(top, text="서버 시작", command=self.start_server).pack(side="left", padx=6)
-        ttk.Button(top, text="서버 중지", command=self.stop_server).pack(side="left")
-        self.server_label = ttk.Label(top, text="")
-        self.server_label.pack(side="left", padx=8)
-        self.camera_label = tk.Label(top, text="카메라 대기", fg="#57534e")
-        self.camera_label.pack(side="left", padx=8)
+        body = ttk.Panedwindow(self.root, orient="horizontal")
+        body.pack(fill="both", expand=True, padx=8, pady=8)
+        left = ttk.Frame(body)
+        right = ttk.Frame(body)
+        body.add(left, weight=1)
+        body.add(right, weight=1)
 
-        mid = ttk.Frame(self.root, padding=(8, 0, 8, 4))
-        mid.pack(fill="x")
-        ttk.Button(mid, text="감시 시작", command=self.start_watch).pack(side="left")
-        ttk.Button(mid, text="감시 중지", command=self.stop_watch).pack(side="left", padx=6)
-        ttk.Checkbutton(mid, text="푸시", variable=self.send).pack(side="left")
-        ttk.Button(mid, text="트레이로", command=self.to_tray).pack(side="left", padx=6)
-        ttk.Button(mid, text="종료", command=self.quit_app).pack(side="left")
-        ttk.Button(mid, text="파일 테스트", command=self.test_file).pack(side="left", padx=6)
-        ttk.Button(mid, text="붙여넣기", command=self.test_clipboard).pack(side="left")
+        model = ttk.LabelFrame(left, text="모델", padding=6)
+        model.pack(fill="x")
+        row = ttk.Frame(model)
+        row.pack(fill="x")
+        ttk.Radiobutton(row, text="Jev", variable=self.kind, value="jev", command=self.on_model).pack(side="left")
+        ttk.Radiobutton(row, text="Qwen", variable=self.kind, value="qwen", command=self.on_model).pack(side="left", padx=(8, 0))
+        self.radio_jev = row.winfo_children()[0]
+        self.radio_qwen = row.winfo_children()[1]
+        srv = ttk.Frame(model)
+        srv.pack(fill="x", pady=(6, 0))
+        self.btn_server_start = ttk.Button(srv, text="서버 시작", command=self.start_server)
+        self.btn_server_start.pack(side="left")
+        self.btn_server_stop = ttk.Button(srv, text="중지", command=self.stop_server)
+        self.btn_server_stop.pack(side="left", padx=6)
+        self.server_label = ttk.Label(srv, text="")
+        self.server_label.pack(side="left", padx=8)
+
+        watch = ttk.LabelFrame(left, text="감시", padding=6)
+        watch.pack(fill="x", pady=(8, 0))
+        wrow = ttk.Frame(watch)
+        wrow.pack(fill="x")
+        self.btn_watch_start = ttk.Button(wrow, text="시작", command=self.start_watch)
+        self.btn_watch_start.pack(side="left")
+        self.btn_watch_stop = ttk.Button(wrow, text="중지", command=self.stop_watch)
+        self.btn_watch_stop.pack(side="left", padx=6)
+        ttk.Checkbutton(wrow, text="푸시", variable=self.send).pack(side="left", padx=(8, 0))
+        self.camera_label = tk.Label(watch, text="카메라 대기", fg="#57534e", anchor="w")
+        self.camera_label.pack(fill="x", pady=(4, 0))
+
+        test = ttk.LabelFrame(left, text="한 장 테스트", padding=6)
+        test.pack(fill="x", pady=(8, 0))
+        trow = ttk.Frame(test)
+        trow.pack(fill="x")
+        self.btn_test_file = ttk.Button(trow, text="파일", command=self.test_file)
+        self.btn_test_file.pack(side="left")
+        self.btn_test_clip = ttk.Button(trow, text="붙여넣기", command=self.test_clipboard)
+        self.btn_test_clip.pack(side="left", padx=6)
+        ttk.Label(trow, text="Ctrl+V", foreground="#57534e").pack(side="left", padx=8)
         self.root.bind("<Control-v>", lambda _e: self.test_clipboard())
 
-        self._build_jev_panel()
-
-        self.headline = tk.Label(self.root, text="판정 없음", justify="left", anchor="w", padx=12, font=("Segoe UI", 28, "bold"))
+        vrow = ttk.Frame(left)
+        vrow.pack(fill="x", pady=(12, 0))
+        self.btn_copy = ttk.Button(vrow, text="복사", command=self.copy_verdict, width=6)
+        self.btn_copy.pack(side="right", anchor="n")
+        texts = ttk.Frame(vrow)
+        texts.pack(side="left", fill="both", expand=True)
+        self.headline = self._readonly_text(texts, height=1, font=("Segoe UI", 22, "bold"), fg="#14532d")
         self.headline.pack(fill="x")
-        self.detail = tk.Label(self.root, text="", justify="left", anchor="w", padx=12, font=("Segoe UI", 16), wraplength=860)
+        self.detail = self._readonly_text(texts, height=8, font=("Segoe UI", 12), fg="#1c1917")
         self.detail.pack(fill="x")
-        self.image = tk.Label(self.root, anchor="w", padx=8)
-        self.image.pack(fill="x")
-        ttk.Label(self.root, textvariable=self.note, anchor="w", padding=(8, 2)).pack(fill="x")
-        ttk.Label(self.root, text="기록 (글자만, 최근 50)", anchor="w", padding=(8, 2)).pack(fill="x")
-        self.history = tk.Listbox(self.root, height=5, activestyle="none")
-        self.history.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        self._fill(self.headline, "판정 없음")
+        ttk.Label(left, textvariable=self.note, anchor="w").pack(fill="x", pady=(8, 0))
         ttk.Label(
-            self.root,
-            text="의료기기 아님. 종료는 이 창이 켠 감시만 끕니다. 서버는 남습니다. 푸시에는 사진이 없습니다.",
-            anchor="w", padding=(8, 0, 8, 8),
-        ).pack(fill="x")
+            left,
+            text="의료기기 아님. 창을 닫으면 트레이로 갑니다. 종료는 트레이 메뉴. 푸시에는 사진이 없습니다.",
+            foreground="#57534e", wraplength=520, justify="left",
+        ).pack(fill="x", pady=(8, 0))
 
-    def _build_jev_panel(self) -> None:
-        """Thin tkinter part of the 'Jev 서버' settings. All logic is in remote_settings.py."""
-        saved = remote_settings.load()
-        self.r_backend = tk.StringVar(value="remote" if saved.backend == "remote" else "local")
-        self.r_url = tk.StringVar(value=saved.url)
-        self.r_token = tk.StringVar(value=saved.token)
-        self.r_live = tk.BooleanVar(value=saved.remote_live)
-        self.r_show = tk.BooleanVar(value=False)
-        self.r_model = tk.StringVar(value="모델: -")
-        self.r_result = tk.StringVar(value="")
-        self.r_status = tk.StringVar(value="")
-        box = ttk.LabelFrame(self.root, text="Jev 서버", padding=6)
-        box.pack(fill="x", padx=8, pady=(0, 4))
-        row1 = ttk.Frame(box)
-        row1.pack(fill="x")
-        ttk.Radiobutton(row1, text="로컬(기본)", variable=self.r_backend, value="local").pack(side="left")
-        ttk.Radiobutton(row1, text="원격 서버", variable=self.r_backend, value="remote").pack(side="left", padx=8)
-        ttk.Label(row1, textvariable=self.r_model).pack(side="left", padx=12)
-        row2 = ttk.Frame(box)
-        row2.pack(fill="x", pady=2)
-        ttk.Label(row2, text="주소").pack(side="left")
-        ttk.Entry(row2, textvariable=self.r_url, width=46).pack(side="left", padx=(4, 12))
-        ttk.Label(row2, text="토큰").pack(side="left")
-        self.r_token_entry = ttk.Entry(row2, textvariable=self.r_token, width=30, show="*")
-        self.r_token_entry.pack(side="left", padx=4)
-        ttk.Checkbutton(row2, text="보이기", variable=self.r_show, command=self.toggle_token).pack(side="left")
-        row3 = ttk.Frame(box)
-        row3.pack(fill="x")
-        ttk.Checkbutton(row3, text="실시간 감시에도 원격 사용", variable=self.r_live).pack(side="left")
-        tk.Label(row3, text="체크하면 감시 중인 아기 사진이 이 주소의 서버로 나갑니다. 끊기면 '판정 불가' 알림이 갑니다.",
-                 fg="#9b1c1c").pack(side="left", padx=8)
-        row4 = ttk.Frame(box)
-        row4.pack(fill="x", pady=2)
-        ttk.Button(row4, text="저장", command=self.save_remote).pack(side="left")
-        ttk.Button(row4, text="연결 테스트", command=self.test_remote).pack(side="left", padx=6)
-        ttk.Label(row4, textvariable=self.r_result).pack(side="left", padx=6)
-        tk.Label(box, anchor="w", justify="left", fg="#9b1c1c",
-                 text="사진이 이 주소로 나갑니다 (사진 테스트, 점수 측정, 위 칸을 체크한 실시간 감시). 연결 테스트 자체는 사진을 보내지 않습니다.\n"
-                      "localhost와 사설 IP(192.168.x.x 등)는 http와 토큰 없음이 가능하고, 그 밖의 주소는 https와 토큰이 필요합니다."
-                 ).pack(fill="x")
-        self.r_status_label = tk.Label(box, textvariable=self.r_status, anchor="w", justify="left", fg="#57534e")
-        self.r_status_label.pack(fill="x")
-        ttk.Label(box, text="저장해야 적용됩니다. 사진 테스트는 저장된 설정을 씁니다. 환경 변수(CRIB_JEV_*)가 파일보다 우선합니다.",
-                  foreground="#57534e").pack(fill="x")
-
-    def toggle_token(self) -> None:
-        self.r_token_entry.configure(show="" if self.r_show.get() else "*")
-
-    def _form(self) -> remote_settings.Settings:
-        return remote_settings.settings_from_form(self.r_backend.get(), self.r_url.get(), self.r_token.get(),
-                                                  "", self.r_live.get())
-
-    def save_remote(self) -> None:
-        form = self._form()
-        saved = remote_settings.load()
-        # keep a hand-edited timeout from the file; the panel has no field for it
-        form = remote_settings.Settings(form.backend, form.url, form.token, saved.timeout, form.remote_live)
-        try:
-            remote_settings.save(form)
-        except remote_settings.SettingsError as exc:
-            self.note.set(f"저장하지 않았습니다: {exc}")
-            return
-        except OSError as exc:
-            self.note.set(f"저장하지 못했습니다: {type(exc).__name__}")
-            return
-        self.note.set("Jev 서버 설정을 저장했습니다. 감시 중이면 다음 판정부터 적용됩니다.")
-        self._refresh_backend()
-
-    def test_remote(self) -> None:
-        """GET /v1/models through the same client code as judging, off the UI thread."""
-        form = self._form()
-        self.r_result.set("연결 확인 중...")
-        # the form is tested as typed; 'local' tests the loopback server
-        settings = form if form.backend == "remote" else remote_settings.Settings()
-
-        def work() -> None:
-            res = remote_settings.test_connection(settings)
-
-            def done() -> None:
-                self.r_result.set(res["message"])
-                self.r_model.set("모델: " + (res["model"] or "-") if res["ok"] else "모델: -")
-
-            self.root.after(0, done)
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _refresh_backend(self) -> None:
-        settings = remote_settings.load()
-        text = remote_settings.status_line(settings, self.kind.get())
-        over = remote_settings.env_overrides()
-        if over and self.kind.get() == "jev":
-            text += "  [환경 변수 우선: " + ", ".join(over) + "]"
-        self.r_status.set(text)
-        remote = self.kind.get() == "jev" and remote_settings.uses_remote(settings, False)
-        self.r_status_label.configure(fg="#9b1c1c" if remote else "#14532d")
+        self.image = tk.Label(right, anchor="n")
+        self.image.pack(fill="both", expand=True)
+        hrow = ttk.Frame(right)
+        hrow.pack(fill="x", pady=(8, 0))
+        ttk.Label(hrow, text="기록 (글자만, 최근 50)", anchor="w").pack(side="left")
+        ttk.Button(hrow, text="복사", command=self.copy_history, width=6).pack(side="right")
+        self.history = tk.Listbox(right, height=12, activestyle="none", selectmode="extended", exportselection=False)
+        self.history.pack(fill="both", expand=True)
+        self.history.bind("<Control-c>", lambda _e: self.copy_history())
+        self.history.bind("<Control-C>", lambda _e: self.copy_history())
 
     def _remote_for(self, live: bool) -> bool:
-        """Would a call from the photo test (live=False) or the live watch (live=True) go to the remote Jev?"""
-        return self.kind.get() == "jev" and remote_settings.uses_remote(remote_settings.load(), live)
+        return False
+
+    def _readonly_text(self, parent, height: int, font, fg: str) -> tk.Text:
+        widget = tk.Text(
+            parent, height=height, wrap="word", font=font, fg=fg,
+            bg=self.root.cget("bg"), insertbackground=fg,
+            relief="flat", bd=0, highlightthickness=0, padx=0, pady=0,
+            cursor="xterm", takefocus=True,
+        )
+        widget.bind("<Key>", self._readonly_key)
+        widget.bind("<<Paste>>", lambda _e: "break")
+        widget.bind("<<Cut>>", lambda _e: "break")
+        return widget
+
+    @staticmethod
+    def _readonly_key(event: tk.Event) -> str | None:
+        if event.keysym in {
+            "Left", "Right", "Up", "Down", "Home", "End", "Next", "Prior",
+            "Shift_L", "Shift_R", "Control_L", "Control_R",
+        }:
+            return None
+        if event.state & 0x4 and event.keysym.lower() in {"c", "a"}:
+            return None
+        return "break"
+
+    def _fill(self, widget: tk.Text, text: str, fg: str | None = None) -> None:
+        if fg:
+            widget.configure(fg=fg)
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+
+    def _clipboard(self, text: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update_idletasks()
+
+    def copy_verdict(self) -> None:
+        head = self.headline.get("1.0", "end-1c").strip()
+        detail = self.detail.get("1.0", "end-1c").strip()
+        blob = head if not detail else f"{head}\n{detail}"
+        self._clipboard(blob)
+        self.note.set("판정 글을 복사했습니다.")
+
+    def copy_history(self) -> None:
+        sel = self.history.curselection()
+        lines = [self.history.get(i) for i in sel] if sel else list(self.history.get(0, "end"))
+        if not lines:
+            self.note.set("복사할 기록이 없습니다.")
+            return
+        self._clipboard("\n".join(lines))
+        self.note.set("기록을 복사했습니다.")
 
     def _spawn(self, argv: list[str], log_name: str, env: dict | None = None) -> subprocess.Popen:
         (DIR / "frames").mkdir(parents=True, exist_ok=True)
@@ -476,117 +481,155 @@ class App:
         self._logs.append(handle)
         return subprocess.Popen(
             argv, cwd=str(DIR), env=env, stdout=handle, stderr=subprocess.STDOUT,
-            **proc_stop.spawn_kwargs(),
+            creationflags=_NO_WINDOW | _NEW_GROUP,
         )
 
+    def _server_tag(self) -> str:
+        return self.kind.get()
+
+    def _port_up(self, kind: str) -> bool:
+        return bool(self._ports.get(kind))
+
+    def _poll_ports(self) -> None:
+        while self._alive:
+            for kind, port in PORTS.items():
+                try:
+                    self._ports[kind] = port_open(port)
+                except OSError:
+                    self._ports[kind] = False
+            time.sleep(0.4)
+
+    def _watching(self) -> bool:
+        return self.watch_proc is not None and self.watch_proc.poll() is None
+
+    def _sync_controls(self) -> None:
+        state = control_state(self._server_state, self._watching(), self._busy, self._testing)
+        self.btn_server_start.configure(state="normal" if state["server_start"] else "disabled")
+        self.btn_server_stop.configure(state="normal" if state["server_stop"] else "disabled")
+        self.btn_watch_start.configure(state="normal" if state["watch_start"] else "disabled")
+        self.btn_watch_stop.configure(state="normal" if state["watch_stop"] else "disabled")
+        radios = "normal" if state["radios"] else "disabled"
+        self.radio_jev.configure(state=radios)
+        self.radio_qwen.configure(state=radios)
+        test = "normal" if state["test"] else "disabled"
+        self.btn_test_file.configure(state=test)
+        self.btn_test_clip.configure(state=test)
+
+    def _paint_server(self) -> None:
+        kind = self.kind.get()
+        tag = self._server_tag()
+        up = self._port_up(kind)
+        proc = self.server_proc
+        alive = proc is not None and proc.poll() is None
+        dead = proc is not None and proc.poll() is not None
+        if self._stopping_server:
+            state = "끄는 중"
+        elif up:
+            state = "켜짐"
+        elif alive:
+            state = "켜는 중"
+        elif dead:
+            state = "실패"
+            self.server_proc = None
+        else:
+            state = "꺼짐"
+        self._server_state = state
+        self.server_label.configure(text=f"{tag} {state}")
+        self._sync_controls()
+
     def start_server(self) -> None:
-        if self.server_proc and self.server_proc.poll() is None:
-            self.note.set("서버를 켜는 중입니다. 8GB라 다른 서버는 같이 못 올립니다.")
+        if self._busy:
             return
         kind = self.kind.get()
-        reason = can_start_server(kind, port_open(PORTS[kind]), port_open(PORTS[other_kind(kind)]))
+        alive = self.server_proc is not None and self.server_proc.poll() is None
+        if alive or self._port_up(kind):
+            self._paint_server()
+            return
+        if self._port_up(other_kind(kind)):
+            self.note.set("다른 모델 서버가 켜져 있습니다. 8GB라 같이 못 올립니다.")
+            return
+        reason = server_missing(kind)
         if reason:
             self.note.set(reason)
+            self._paint_server()
             return
         self.server_proc = self._spawn(server_argv(kind), f"gui-{kind}.log")
         self.server_kind = kind
-        self.note.set(f"{kind} 서버를 켜는 중입니다.")
+        self._paint_server()
 
     def stop_server(self) -> None:
-        try:
-            self.note.set(self._stop_server())
-        except Exception as exc:  # a Tk callback would only print this to stderr: show it instead
-            self.note.set(f"서버를 중지하지 못했습니다: {type(exc).__name__}: {exc}")
-
-    def _stop_server(self) -> str:
-        """Returns the message to show. 'stopped' is only claimed once the port is really closed."""
+        if self._busy:
+            return
         kind = self.kind.get()
-        port = PORTS[kind]
-        if self.server_proc and self.server_proc.poll() is None and self.server_kind == kind:
-            ok = self._stop_proc(self.server_proc)
-            self.server_proc = None
-            if not ok:
-                return "이 창이 켠 서버가 종료되지 않았습니다. 작업 관리자에서 직접 끝내 주세요."
-            if not proc_stop.wait_port_closed(port, 5.0, port_open):
-                return self._still_open(kind, port)
-            return "이 창이 켠 서버를 중지했습니다."
-        pid = listening_pid(port)
-        if pid is None:
-            if kind == "jev":
-                remote = self._switch_to_local()
-                if remote:
-                    return remote
-            return "서버가 꺼져 있습니다."
-        command = process_command(pid)
-        if not allowed_stop(kind, command):
-            return "이 포트의 프로세스가 모델 서버가 아니라서 중지하지 않았습니다."
-        # /F: a windowless server ignores the polite WM_CLOSE; /T: also the children (venv launcher -> python)
-        proc_stop.kill_pid_tree(pid, True)
-        if not proc_stop.wait_port_closed(port, 5.0, port_open):
-            return self._still_open(kind, port, "이 창이 켠 서버가 아니라서 권한 등으로 끝내지 못했을 수 있습니다. ")
-        return "모델 서버를 중지했습니다."
+        proc = self.server_proc
+        self._busy = True
+        self._stopping_server = True
+        self._paint_server()
+        threading.Thread(target=self._stop_server_bg, args=(kind, proc), daemon=True).start()
 
-    def _still_open(self, kind: str, port: int, hint: str = "") -> str:
-        return f"{kind} 서버를 껐지만 포트 {port}이(가) 아직 열려 있습니다. {hint}작업 관리자에서 직접 끝내 주세요."
-
-    def _switch_to_local(self) -> str | None:
-        """Remote Jev has no local process: 'off' means going back to local. None if not in remote mode."""
-        settings = remote_settings.load()
-        if settings.backend != "remote":
-            return None
-        if "CRIB_JEV_BACKEND" in remote_settings.env_overrides():
-            return "원격 모드는 환경 변수 CRIB_JEV_BACKEND로 정해져 있어 GUI에서 바꿀 수 없습니다. 꺼야 할 로컬 프로세스도 없습니다."
-        # Never switch silently while the watch may be using the remote: the watch re-reads the settings
-        # for every judgment, so it would suddenly fall back to a local server that may be off.
-        if self.watch_proc and self.watch_proc.poll() is None:
-            return "감시 중에는 원격 설정을 바꾸지 않습니다. 먼저 감시를 멈춘 뒤 다시 눌러 주세요."
-        if settings.remote_live:
-            return ("'실시간 감시에도 원격 사용'이 켜져 있어 원격 설정을 바꾸지 않습니다. 다른 곳에서 감시가 돌고 있을 수 있습니다. "
-                    "감시를 멈추고 체크를 끈 뒤 저장하고 다시 눌러 주세요.")
-        saved = remote_settings.Settings("local", settings.url, settings.token, settings.timeout, settings.remote_live)
+    def _stop_server_bg(self, kind: str, proc: subprocess.Popen | None) -> None:
+        note = None
         try:
-            remote_settings.save(saved)
-        except (remote_settings.SettingsError, OSError) as exc:
-            return f"원격 연결을 해제하지 못했습니다: {type(exc).__name__}"
-        self.r_backend.set("local")
-        self._refresh_backend()
-        return "원격 Jev 연결을 해제했습니다(로컬로 전환, 끌 프로세스 없음)."
+            if proc is not None and proc.poll() is None:
+                kill_tree(proc.pid)
+            else:
+                pid = listening_pid(PORTS[kind])
+                if pid is not None:
+                    command = process_command(pid)
+                    if allowed_stop(kind, command):
+                        kill_tree(pid)
+                    else:
+                        note = "이 포트의 프로세스가 모델 서버가 아니라서 중지하지 않았습니다."
+        except (OSError, subprocess.SubprocessError) as exc:
+            note = f"중지 실패: {type(exc).__name__}"
+        self.root.after(0, lambda: self._stop_server_done(note))
 
-    def _stop_proc(self, proc: subprocess.Popen) -> bool:
-        """Stop proc and its whole process tree (terminate/kill, taskkill /T /F on Windows)."""
-        return proc_stop.stop_process_tree(proc)
+    def _stop_server_done(self, note: str | None) -> None:
+        self._busy = False
+        self._stopping_server = False
+        self.server_proc = None
+        if note:
+            self.note.set(note)
+        self._paint_server()
 
     def start_watch(self) -> None:
-        if self.watch_proc and self.watch_proc.poll() is None:
-            self.note.set("감시가 이미 켜져 있습니다.")
+        if self._busy or self._watching():
             return
-        remote_live = self._remote_for(True)
-        if not remote_live and not port_open(PORTS[self.kind.get()]):
+        if not self._port_up(self.kind.get()):
             self.note.set("서버가 꺼져 있어서 감시를 시작하지 않습니다.")
             return
         env = os.environ.copy()
         env["CRIB_MODEL"] = self.kind.get()
         self.watch_proc = self._spawn(watch_argv(self.send.get()), "gui-watch.log", env)
-        self.note.set("감시를 시작했습니다." + (" 푸시 켜짐." if self.send.get() else " 푸시 꺼짐.")
-                      + (f" 원격 서버 사용 중: {remote_settings.photo_destination(remote_settings.load().url)}." if remote_live else ""))
+        self.note.set("감시를 시작했습니다." + (" 푸시 켜짐." if self.send.get() else " 푸시 꺼짐."))
+        self._sync_controls()
 
     def stop_watch(self) -> None:
-        if self.watch_proc and self.watch_proc.poll() is None:
-            self._stop_proc(self.watch_proc)
-            self.watch_proc = None
-            self.note.set("감시를 중지했습니다.")
-        else:
-            self.note.set("이 창이 켠 감시가 없습니다.")
+        if self._busy or not self._watching():
+            return
+        self._busy = True
+        self._sync_controls()
+        proc = self.watch_proc
+        threading.Thread(target=self._stop_watch_bg, args=(proc,), daemon=True).start()
+
+    def _stop_watch_bg(self, proc: subprocess.Popen) -> None:
+        try:
+            if proc.poll() is None:
+                kill_tree(proc.pid)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        self.root.after(0, self._stop_watch_done)
+
+    def _stop_watch_done(self) -> None:
+        self._busy = False
+        self.watch_proc = None
+        self.note.set("감시를 중지했습니다.")
+        self._sync_controls()
 
     def on_model(self) -> None:
-        running = self.watch_proc and self.watch_proc.poll() is None
-        if running:
-            self._stop_proc(self.watch_proc)
-            self.watch_proc = None
-        if running and (self._remote_for(True) or port_open(PORTS[self.kind.get()])):
-            self.start_watch()
-        elif running:
-            self.note.set("모델을 바꿨습니다. 서버가 꺼져 있어 감시는 중지됐습니다.")
+        self._paint_server()
+        if self._watching():
+            self.stop_watch()
 
     def to_tray(self) -> None:
         if self.tray is None:
@@ -602,20 +645,21 @@ class App:
             self.root.withdraw()
 
     def quit_app(self) -> None:
-        if self.watch_proc and self.watch_proc.poll() is None:
-            self._stop_proc(self.watch_proc)
+        self._alive = False
+        if self.watch_proc is not None and self.watch_proc.poll() is None:
+            kill_tree(self.watch_proc.pid)
             self.watch_proc = None
+        if self.server_proc is not None and self.server_proc.poll() is None:
+            kill_tree(self.server_proc.pid)
+            self.server_proc = None
         if self.tray is not None:
             self.tray.remove()
             self.tray = None
         self.root.destroy()
 
     def refresh(self) -> None:
-        kind = self.kind.get()
-        up = port_open(PORTS[kind])
-        self.server_label.configure(text=f"{kind} {PORTS[kind]} " + ("켜짐" if up else "꺼짐"))
-        self._refresh_backend()
-        watching = self.watch_proc is not None and self.watch_proc.poll() is None
+        self._paint_server()
+        watching = self._watching()
         cam_text, cam_color = camera_view(watching, read_status())
         self.camera_label.configure(text=cam_text, fg=cam_color)
         if self._status_hold and not (STATUS.is_file() and STATUS.stat().st_mtime > self._hold_at):
@@ -681,15 +725,15 @@ class App:
         if self._testing:
             self.note.set("테스트가 아직 돌아가는 중입니다.")
             return
-        remote = self._remote_for(False)
-        if not remote and not port_open(PORTS[self.kind.get()]):
+        if not self._port_up(self.kind.get()):
             self.note.set("서버가 꺼져 있어서 테스트하지 않습니다.")
             return
         self._testing = True
+        self._sync_controls()
         self._show(image)
         self._apply_verdict({"error": True, "reason": "판정 중"})
-        self.headline.configure(text="판정 중", fg="#333333")
-        self.note.set("폰으로는 보내지 않습니다." + (f" 원격 서버로 보냅니다: {remote_settings.photo_destination(remote_settings.load().url)}." if remote else ""))
+        self._fill(self.headline, "판정 중", "#333333")
+        self.note.set("폰으로는 보내지 않습니다.")
         kind = self.kind.get()
 
         def work() -> None:
@@ -712,9 +756,10 @@ class App:
 
             def done() -> None:
                 self._testing = False
+                self._sync_controls()
                 if fail:
-                    self.headline.configure(text="판정 실패", fg="#9b1c1c")
-                    self.detail.configure(text=fail)
+                    self._fill(self.headline, "판정 실패", "#9b1c1c")
+                    self._fill(self.detail, fail)
                 else:
                     self._apply_verdict(result, hold=True)
                 self.note.set("테스트입니다. 푸시하지 않았고, 감시 기록에도 넣지 않았습니다.")
@@ -726,8 +771,8 @@ class App:
     def _apply_verdict(self, row: dict | None, hold: bool = False) -> None:
         head, detail = verdict_text(row)
         alert = bool(row and row.get("should_alert"))
-        self.headline.configure(text=head, fg="#9b1c1c" if alert else "#14532d")
-        self.detail.configure(text=detail)
+        self._fill(self.headline, head, "#9b1c1c" if alert else "#14532d")
+        self._fill(self.detail, detail)
         if hold:
             self._status_hold = True
             self._hold_at = time.time()
@@ -753,7 +798,8 @@ def _check() -> None:
     assert "llama-server" in server_argv("qwen")[0]
     assert can_start_server("jev", True, False) == "이미 켜져 있습니다."
     assert can_start_server("jev", False, True).startswith("다른 모델")
-    assert allowed_stop("jev", r"D:\Dev\imajev\.venv\python.exe C:\_AX\baby-monitor\imajev_serve.py")
+    assert allowed_stop("jev", str(DIR / "imajev_serve.py"))
+    assert not allowed_stop("jev", str(DIR / "d1_omni_serve.py"))
     assert not allowed_stop("jev", "python.exe watch.py --rtsp")
     assert not port_open(9)
     assert "--send" not in watch_argv(False) and "--send" in watch_argv(True)
@@ -761,17 +807,11 @@ def _check() -> None:
     assert blank is None and err
     img, err = image_from_clipboard(Image.new("RGB", (8, 8), (1, 2, 3)))
     assert err is None and img is not None and img.size == (8, 8)
-    missing, err = image_from_clipboard([r"C:\_AX\baby-monitor\no-such-photo.jpg"])
+    missing, err = image_from_clipboard([str(DIR / "no-such-photo.jpg")])
     assert missing is None
     head, detail = verdict_text({"should_alert": False, "baby_present": True, "face_visible": False, "rule": None, "reason": "x"})
     assert head == "알림 없음" and "아기 있음" in detail and "얼굴 안 보임" in detail
     assert "입코 가림 0.76" in verdict_text({"should_alert": False, "scores": {"face_cover": 0.764}})[1]
-    got = verdict_text({"should_alert": False, "scores": {"face_down": 0.35},
-                        "face_down_parts": {"face_down_cheek": 0.2, "face_down_back": 0.72, "face_down_belly": 0.35}})[1]
-    assert "엎드림 0.35  (볼 0.20 / 등 0.72 / 배 0.35)" in got
-    assert "(" not in verdict_text({"should_alert": False, "scores": {"face_down": 0.35}})[1]
-    assert "(" not in verdict_text({"should_alert": False, "scores": {"face_down": 0.35}, "face_down_parts": "x"})[1]
-    assert "(" not in verdict_text({"should_alert": False, "scores": {"face_down": 0.35}, "face_down_parts": {"face_down_back": None}})[1]
     assert camera_view(False, {"camera": "ok"})[0] == "카메라 대기"
     assert camera_view(True, {"camera": "ok"}) == ("카메라 연결됨", "#14532d")
     assert camera_view(True, {"camera": "down"})[0] == "카메라 끊김"
@@ -782,9 +822,12 @@ def _check() -> None:
     line = remote_settings.status_line(st)
     assert "원격" in line and "abc-def" not in line and "tok_0123" not in line
     assert "로컬" in remote_settings.status_line(remote_settings.Settings())
-    lan = remote_settings.Settings("remote", "http://192.168.1.20:9000/api", "", "", True)
-    assert remote_settings.validate(lan) == lan and "같은 네트워크" in remote_settings.status_line(lan)
-    assert "192" not in remote_settings.status_line(lan) and "집 밖" in remote_settings.photo_destination(st.url)
+    off = control_state("꺼짐", False, False, False)
+    assert off["server_start"] and not off["server_stop"] and not off["watch_start"] and not off["test"]
+    on = control_state("켜짐", False, False, False)
+    assert not on["server_start"] and on["server_stop"] and on["watch_start"] and on["test"]
+    busy = control_state("끄는 중", False, True, False)
+    assert not busy["server_start"] and not busy["server_stop"] and not busy["radios"]
     print("ok crib-gui")
 
 
@@ -793,7 +836,7 @@ def main() -> None:
         _check()
         return
     root = tk.Tk()
-    root.geometry("980x920")
+    root.geometry("1180x780")
     App(root)
     root.mainloop()
 
