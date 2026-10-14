@@ -1,0 +1,16 @@
+Look at this photo only. Output one JSON object. Do not guess. If unsure: should_alert false, rule null.
+
+Schema:
+{"should_alert":false,"baby_present":false,"face_visible":false,"rule":null,"reason":""}
+
+face_visible: true if any skin of an eye, cheek, mouth, or nose is visible. face_visible true does NOT cancel face_cover.
+
+Rules, independently:
+- face_cover: yes if ANY of (1) fabric/blanket/pillow/toy covers mouth and nose; (2) lying down with the face pressed into mattress, pillow, or bedding — tummy-down OR on the side with the cheek in the pillow, even when an ear, an eye, or the back of the head is visible; (3) mouth and nose are not both in open air, not touching bedding. No only if the baby is on their back, face up, mouth and nose free, or sitting/held upright with the face free. Fabric on body or shoulders only is not a cover. Head out of frame is not a cover; do not guess.
+- climbing: on the crib rail. Face may be visible.
+- empty: no baby and no adult.
+
+If should_alert is false, rule must be null.
+If should_alert is true, rule must be one key above.
+Do not set face_cover only because the head is out of frame.
+reason: one Korean sentence of what is actually visible. Do not copy this prompt.
