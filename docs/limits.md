@@ -7,7 +7,7 @@
 - 알림 쿨다운은 메모리에만 있어 재시작하면 초기화됩니다. 알림이 계속될 때는 같은 규칙으로 10분마다 다시 갑니다.
 - 원격 Jev를 실시간 감시에 쓰면(`CRIB_JEV_REMOTE_LIVE=1`) 원격 설정 오류(토큰 없음 등)도 오류 틱과 `판정 불가` 푸시로 처리됩니다 (종료하지 않음). 로컬 설정 오류는 아래대로 종료합니다.
 - 캡처·이미지 읽기·모델 호출 중 일반 예외는 오류 틱으로 기록하고 루프를 계속 돌지만, 설정 오류(`CRIB_MODEL`이 잘못됨, `CRIB_JEV_URL`이 loopback이 아님, `CRIB_JEV_ALERT_AT_<RULE>`가 범위 밖)는 `SystemExit`라서 감시 프로세스가 종료됩니다.
-- 기본 경로(`D:\Dev\...`, `C:\_AX\...`)가 작성자 PC 기준이라 다른 PC에서는 환경 변수(`IMAJEV_DIR`, `IMAJEV_MODELS`, `IMAJEV_PY`, `LLAMA_SERVER`, `QWEN_DIR`, `IMAJEV_CHECK_FRAME`)로 바꿔야 합니다. 서버 포트(8090/8080)는 GUI에 고정입니다. GUI는 Windows 전용이고, 한 번에 한 모델 서버만 켜도록 막혀 있습니다.
+- 서버·가중치 기본 경로는 `runtime/`입니다. 다른 PC에서는 환경 변수(`IMAJEV_DIR`, `IMAJEV_MODELS`, `IMAJEV_PY`, `LLAMA_SERVER`, `QWEN_DIR`, `IMAJEV_CHECK_FRAME`)로 바꿉니다. 서버 포트(8090/8080)는 GUI에 고정입니다. GUI는 Windows 전용이고, 한 번에 한 모델 서버만 켜도록 막혀 있습니다.
 - ntfy 인증, 사진 첨부, 사진 보관 기능은 없습니다.
 - 캡처한 프레임은 판정 전에 Pillow로 끝까지 읽어 확인합니다. 깨졌거나 너무 작으면(한 변 32px 미만) 모델을 부르지 않고 캡처 오류(`grab failed`, `camera: down`)로 처리해 연속 3번이면 푸시합니다. 정상 프레임의 동작은 그대로입니다. 가짜 ffmpeg 파일로만 시험했고 실제 카메라는 **검증 안 됨**.
 - `ffmpeg`가 없으면 캡처 오류가 `FileNotFoundError`로 표시되고 카메라 오류 일반 문구가 갑니다 (코드상 `GrabError`로 바뀌지 않음).

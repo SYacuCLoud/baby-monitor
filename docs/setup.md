@@ -22,7 +22,7 @@ pip install -r requirements.txt
 runtime\imajev\.venv\Scripts\python.exe imajev_serve.py
 ```
 
-경로 기본값은 [설정](settings.md)의 `IMAJEV_DIR`, `IMAJEV_MODELS`입니다. 서버는 `HF_HUB_OFFLINE=1`(미설정 시)로 모델을 오프라인에서 읽고, uvicorn을 `asyncio:SelectorEventLoop`로 띄웁니다 (파일 머리말 주석: Windows 기본 Proactor 루프에서 loopback 응답이 끊겼음). 질문(8개)이 공유하는 이미지 prefill을 한 번만 계산하도록 imajev의 `TorchBackend.score`를 교체합니다. 원본 경로와의 점수 차이는 `imajev_serve.py --check`가 확인합니다 (최대 차이 0.05 미만이어야 통과, **실행해 보지 않음**). `--check`의 기본 프레임 경로는 작성자 PC의 비공개 경로(`C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg`)이므로, 다른 PC에서는 환경 변수 `IMAJEV_CHECK_FRAME`으로 프레임 파일을 지정하세요.
+경로 기본값은 [설정](settings.md)의 `IMAJEV_DIR`, `IMAJEV_MODELS`입니다. 서버는 `HF_HUB_OFFLINE=1`(미설정 시)로 모델을 오프라인에서 읽고, uvicorn을 `asyncio:SelectorEventLoop`로 띄웁니다 (파일 머리말 주석: Windows 기본 Proactor 루프에서 loopback 응답이 끊겼음). 질문(이미지 prefill 공유)을 한 번만 계산하도록 imajev의 `TorchBackend.score`를 교체합니다. 원본 경로와의 점수 차이는 `imajev_serve.py --check`가 확인합니다 (최대 차이 0.05 미만이어야 통과, **실행해 보지 않음**). `--check`의 기본 프레임 경로는 작성자 PC의 비공개 경로(`C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg`)이므로, 다른 PC에서는 환경 변수 `IMAJEV_CHECK_FRAME`으로 프레임 파일을 지정하세요.
 
 **Qwen.** `CRIB_MODEL=qwen`일 때 `127.0.0.1:8080`이 필요합니다 (주소는 코드에 고정, 환경 변수 없음).
 

@@ -17,13 +17,13 @@
 | `CRIB_JEV_KEY` | (없음) | `jev_protocol.py` | 설정하면 `Authorization: Bearer ...` 헤더를 붙임 |
 | `CRIB_JEV_ALERT_AT_FACE_COVER`, `CRIB_JEV_ALERT_AT_CLIMBING` | `0.60` | `jev_protocol.py` | 규칙별 알림 점수 기준 (Jev만). 0 초과 1 이하의 숫자, 비우면 0.60. 숫자가 아니거나 범위 밖이면 `SystemExit`로 종료. `empty`(0.30 미만 기준)와 표시용 0.50은 환경 변수로 못 바꿈 |
 | `CRIB_JEV_PORT` | `8090` | `imajev_serve.py` | imajev 서버가 열 포트. 클라이언트(`CRIB_JEV_URL`)와 GUI(8090 고정)는 따라 바뀌지 않으므로 바꾸면 `CRIB_JEV_URL`도 맞춰야 하고 GUI는 인식하지 못함 |
-| `IMAJEV_DIR` | `D:\Dev\imajev` | `imajev_serve.py` | imajev 저장소 위치 |
-| `IMAJEV_MODELS` | `D:\Dev\_Models` | `imajev_serve.py` | 모델 폴더. `imajev-2b/` 어댑터를 이 아래에서 찾음 |
+| `IMAJEV_DIR` | `runtime/imajev` | `imajev_serve.py` | imajev 저장소 위치 |
+| `IMAJEV_MODELS` | `runtime/models` | `imajev_serve.py` | 모델 폴더. `imajev-2b/` 어댑터를 이 아래에서 찾음 |
 | `IMAJEV_CHECK_FRAME` | `C:\_AX\baby-monitor\baby-monitor-private\frames-live\latest.jpg` | `imajev_serve.py --check` | 속도·점수 비교 검사에 쓸 프레임 파일 |
 | `HF_HUB_OFFLINE` | `1` (미설정일 때만 설정) | `imajev_serve.py` | Hugging Face 오프라인 모드 |
-| `IMAJEV_PY` | `D:\Dev\imajev\.venv\Scripts\python.exe` | `crib_gui.py` | GUI가 Jev 서버를 띄울 Python |
-| `LLAMA_SERVER` | `D:\Dev\llama.cpp\llama-server.exe` | `crib_gui.py` | GUI가 Qwen 서버로 띄울 실행 파일 |
-| `QWEN_DIR` | `D:\Dev\_Models\Qwen3-VL-4B` | `crib_gui.py` | GUI가 찾는 `Qwen3-VL-4B-Instruct-Q4_K_M.gguf`, `mmproj-F16.gguf`의 폴더 |
+| `IMAJEV_PY` | `runtime/imajev/.venv/Scripts/python.exe` | `crib_gui.py` | GUI가 Jev 서버를 띄울 Python |
+| `LLAMA_SERVER` | `runtime/llama-server/llama-server.exe` | `crib_gui.py` | GUI가 Qwen 서버로 띄울 실행 파일 |
+| `QWEN_DIR` | `runtime/models/Qwen3-VL-4B` | `crib_gui.py` | GUI가 찾는 `Qwen3-VL-4B-Instruct-Q4_K_M.gguf`, `mmproj-F16.gguf`의 폴더 |
 | `RTSP_USER` | (필수) | `watch.py` | 카메라 계정. `rtsp.env`로도 지정 (환경 변수 우선) |
 | `RTSP_PASS` | (필수) | `watch.py` | 카메라 비밀번호. 위와 같음 |
 | `RTSP_HOST` | (필수) | `watch.py` | `host` 또는 `host:port`만 허용 (`rtsp://`나 `/` 불가). 포트 없으면 `:554` |
