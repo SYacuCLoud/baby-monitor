@@ -30,13 +30,15 @@ DIR = Path(__file__).resolve().parent
 FRAME = DIR / "frames" / "latest.jpg"
 STATUS = DIR / "frames" / "status.json"
 LOG = DIR / "frames" / "ticks.jsonl"
-PORTS = {"jev": 8090, "qwen": 8080}
+PORTS = {"jev": 8090, "qwen": 8080, "lightning": 8741}
 HISTORY = 50
 PREVIEW = 720
 
 IMAJEV_PY = Path(os.environ.get("IMAJEV_PY", str(DIR / "runtime" / "imajev" / ".venv" / "Scripts" / "python.exe")))
 LLAMA = Path(os.environ.get("LLAMA_SERVER", str(DIR / "runtime" / "llama-server" / "llama-server.exe")))
 QWEN_DIR = Path(os.environ.get("QWEN_DIR", str(DIR / "runtime" / "models" / "Qwen3-VL-4B")))
+LIGHTNING_PY = Path(os.environ.get("LIGHTNING_PY", sys.executable))
+LIGHTNING_GGUF_DIR = Path(os.environ.get("LIGHTNING_GGUF_DIR", r"D:\Dev\_Models\h2o-lightning-4b-gguf"))
 
 _NO_WINDOW = 0x08000000
 _NEW_GROUP = 0x00000200
@@ -155,7 +157,12 @@ def port_open(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def other_kind(kind: str) -> str:
+    """Legacy helper (jev/qwen only). Prefer any_other_open for 3+ models."""
     return "qwen" if kind == "jev" else "jev"
+
+
+def any_other_open(kind: str, ports: dict[str, bool]) -> bool:
+    return any(up for name, up in ports.items() if name != kind)
 
 
 def server_argv(kind: str) -> list[str]:
@@ -169,6 +176,8 @@ def server_argv(kind: str) -> list[str]:
             "-ngl", "99", "--mmproj-offload", "--image-min-tokens", "1024",
             "--host", "127.0.0.1", "--port", "8080", "-c", "4096",
         ]
+    if kind == "lightning":
+        return [str(LIGHTNING_PY), str(DIR / "lightning_serve.py")]
     raise ValueError(kind)
 
 
@@ -184,6 +193,14 @@ def server_missing(kind: str) -> str | None:
     argv = server_argv(kind)
     if not Path(argv[0]).is_file():
         return f"실행 파일이 없습니다: {argv[0]}"
+    if kind == "lightning":
+        model = LIGHTNING_GGUF_DIR / "h2o-lightning-4b-Q4_K_M.gguf"
+        mmproj = LIGHTNING_GGUF_DIR / "mmproj-lightning-f16.gguf"
+        llama = Path(os.environ.get("LIGHTNING_LLAMA_SERVER", str(LIGHTNING_GGUF_DIR / "llama-b11946" / "llama-server.exe")))
+        for path, label in ((model, "Lightning Q4 GGUF"), (mmproj, "Lightning mmproj"),
+                            (llama, "llama-server b11946")):
+            if not path.is_file():
+                return f"{label} 없음: {path}"
     return None
 
 
@@ -223,7 +240,10 @@ def process_command(pid: int) -> str:
 def allowed_stop(kind: str, command: str) -> bool:
     if kind == "jev":
         return "imajev_serve.py" in command
-    return "llama-server" in command.replace("\\", "/")
+    if kind == "lightning":
+        cmd = command.replace(chr(92), "/")
+        return "lightning_serve.py" in cmd or "h2o_lightning_llamacpp.py" in cmd or "llama-server" in cmd
+    return "llama-server" in command.replace(chr(92), "/")
 
 
 def kill_tree(pid: int) -> None:
@@ -332,7 +352,7 @@ class App:
         self._busy = False
         self._stopping_server = False
         self._alive = True
-        self._ports = {"jev": False, "qwen": False}
+        self._ports = {"jev": False, "qwen": False, "lightning": False}
         self._server_state = "꺼짐"
         self.tray: Tray | None = None
         root.title("아기 감시")
@@ -359,8 +379,12 @@ class App:
         row.pack(fill="x")
         ttk.Radiobutton(row, text="Jev", variable=self.kind, value="jev", command=self.on_model).pack(side="left")
         ttk.Radiobutton(row, text="Qwen", variable=self.kind, value="qwen", command=self.on_model).pack(side="left", padx=(8, 0))
+        ttk.Radiobutton(row, text="Lightning", variable=self.kind, value="lightning", command=self.on_model).pack(side="left", padx=(8, 0))
         self.radio_jev = row.winfo_children()[0]
         self.radio_qwen = row.winfo_children()[1]
+        self.radio_lightning = row.winfo_children()[2]
+        self.quant_label = ttk.Label(model, text="Lightning: Q4_K_M (4bit GGUF, llama b11946, 8GB용)")
+        self.quant_label.pack(anchor="w", pady=(4, 0))
         srv = ttk.Frame(model)
         srv.pack(fill="x", pady=(6, 0))
         self.btn_server_start = ttk.Button(srv, text="서버 시작", command=self.start_server)
@@ -511,6 +535,7 @@ class App:
         radios = "normal" if state["radios"] else "disabled"
         self.radio_jev.configure(state=radios)
         self.radio_qwen.configure(state=radios)
+        self.radio_lightning.configure(state=radios)
         test = "normal" if state["test"] else "disabled"
         self.btn_test_file.configure(state=test)
         self.btn_test_clip.configure(state=test)
@@ -545,7 +570,7 @@ class App:
         if alive or self._port_up(kind):
             self._paint_server()
             return
-        if self._port_up(other_kind(kind)):
+        if any_other_open(kind, self._ports):
             self.note.set("다른 모델 서버가 켜져 있습니다. 8GB라 같이 못 올립니다.")
             return
         reason = server_missing(kind)
@@ -796,11 +821,15 @@ def _check() -> None:
     sample.unlink()
     assert "imajev_serve.py" in " ".join(server_argv("jev"))
     assert "llama-server" in server_argv("qwen")[0]
+    assert "lightning_serve.py" in " ".join(server_argv("lightning"))
     assert can_start_server("jev", True, False) == "이미 켜져 있습니다."
     assert can_start_server("jev", False, True).startswith("다른 모델")
     assert allowed_stop("jev", str(DIR / "imajev_serve.py"))
     assert not allowed_stop("jev", str(DIR / "d1_omni_serve.py"))
     assert not allowed_stop("jev", "python.exe watch.py --rtsp")
+    assert allowed_stop("lightning", str(DIR / "lightning_serve.py"))
+    assert any_other_open("lightning", {"jev": True, "qwen": False, "lightning": False})
+    assert not any_other_open("lightning", {"jev": False, "qwen": False, "lightning": True})
     assert not port_open(9)
     assert "--send" not in watch_argv(False) and "--send" in watch_argv(True)
     blank, err = image_from_clipboard(None)

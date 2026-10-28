@@ -180,8 +180,13 @@ def verdict_from_answers(answers: dict) -> dict:
 def assert_saw_image(body: dict) -> None:
     usage = body.get("usage") if isinstance(body, dict) else None
     seen = usage.get("images") if isinstance(usage, dict) else None
-    if not isinstance(seen, list) or len(seen) != 1:
-        raise ValueError("jev server did not read the frame; verdict dropped")
+    if isinstance(seen, list) and len(seen) == 1:
+        return
+    # llama.cpp native decision models (H2O Lightning) omit usage.images.
+    if os.environ.get("CRIB_MODEL", "").strip().lower() == "lightning":
+        if isinstance(body, dict) and isinstance(body.get("answers"), dict) and body["answers"]:
+            return
+    raise ValueError("jev server did not read the frame; verdict dropped")
 
 
 def _read_json(resp, limit: int = 1_000_000) -> dict:

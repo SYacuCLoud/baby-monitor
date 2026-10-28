@@ -1,4 +1,4 @@
-"""Crib model switch. CRIB_MODEL=jev (default) or qwen. Not a medical device."""
+"""Crib model switch. CRIB_MODEL=jev (default), qwen, or lightning. Not a medical device."""
 
 from __future__ import annotations
 
@@ -19,7 +19,13 @@ def ask(image, timeout: int = 180) -> dict:
         from jev_protocol import ask as impl
 
         return impl(image, timeout=timeout)
-    raise SystemExit("CRIB_MODEL must be qwen or jev")
+    if kind == "lightning":
+        # Same /v1/systemone contract as Jev; Lightning shim listens on 8741.
+        os.environ.setdefault("CRIB_JEV_URL", "http://127.0.0.1:8741/v1/systemone")
+        from jev_protocol import ask as impl
+
+        return impl(image, timeout=timeout)
+    raise SystemExit("CRIB_MODEL must be qwen, jev, or lightning")
 
 
 if __name__ == "__main__":
@@ -32,6 +38,6 @@ if __name__ == "__main__":
         ask(None)
         raise SystemExit("expected reject")
     except SystemExit as e:
-        if "qwen or jev" not in str(e):
+        if "qwen, jev, or lightning" not in str(e):
             raise
     print("ok judge")
