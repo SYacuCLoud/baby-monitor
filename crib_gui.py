@@ -474,6 +474,7 @@ class App:
         body.add(left, weight=1)
         body.add(right, weight=3)
         self._panes = body
+        self.root.after(200, lambda: body.sashpos(0, 440))
 
         model = ttk.LabelFrame(left, text="모델", padding=6)
         model.pack(fill="x")
@@ -538,15 +539,17 @@ class App:
         texts = ttk.Frame(vtop)
         texts.pack(side="left", fill="both", expand=True)
         self.headline = self._readonly_text(texts, height=2, font=("Segoe UI", 16, "bold"), fg="#14532d")
+        self.headline.configure(width=30)
         self.headline.pack(fill="x")
-        self.detail = self._readonly_text(texts, height=6, font=("Segoe UI", 11), fg="#1c1917")
+        self.detail = self._readonly_text(texts, height=3, font=("Segoe UI", 11), fg="#1c1917")
+        self.detail.configure(width=30)
         self.detail.pack(fill="x", pady=(4, 0))
         self._fill(self.headline, "판정 없음")
 
         batch = ttk.LabelFrame(left, text="테스트 목록", padding=6)
         batch.pack(fill="both", expand=True, pady=(8, 0))
         self.batch_list = tk.Listbox(
-            batch, height=8, activestyle="none", selectmode="browse", exportselection=False,
+            batch, height=8, width=30, activestyle="none", selectmode="browse", exportselection=False,
             font=("Segoe UI", 10),
         )
         self.batch_list.pack(fill="both", expand=True)
