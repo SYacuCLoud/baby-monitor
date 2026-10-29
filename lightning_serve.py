@@ -86,7 +86,7 @@ def main() -> int:
     ]
     print(f"[lightning] starting: {' '.join(cmd)}", flush=True)
     backend_log = open(log_dir / "backend.log", "ab", buffering=0)
-    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     env = os.environ.copy()
     proc = subprocess.Popen(
         cmd, env=env, stdout=backend_log, stderr=subprocess.STDOUT, creationflags=flags

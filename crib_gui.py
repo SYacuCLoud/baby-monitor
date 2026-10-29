@@ -383,8 +383,6 @@ class App:
         self.radio_jev = row.winfo_children()[0]
         self.radio_qwen = row.winfo_children()[1]
         self.radio_lightning = row.winfo_children()[2]
-        self.quant_label = ttk.Label(model, text="Lightning: Q4_K_M (4bit GGUF, llama b11946, 8GB용)")
-        self.quant_label.pack(anchor="w", pady=(4, 0))
         srv = ttk.Frame(model)
         srv.pack(fill="x", pady=(6, 0))
         self.btn_server_start = ttk.Button(srv, text="서버 시작", command=self.start_server)
