@@ -61,18 +61,18 @@ _QUESTIONS = {
     },
     "face_in_bed": {
         "type": "noul",
-        "instructions": "Is the baby lying face-down or on their side, with the face in the mattress or pillow?",
+        "instructions": "Are the baby's mouth and nose pressed into the mattress, pillow, or bedding so that breathing could be blocked?",
         "criteria": {
-            "true": "Face is in the mattress or pillow",
-            "false": "Face is not in the bed",
+            "true": "Mouth and nose pressed into bedding; airflow may be blocked",
+            "false": "Mouth or nose has open air",
         },
     },
     "mouth_nose_blocked": {
         "type": "noul",
-        "instructions": "Is fabric covering the baby's mouth and nose?",
+        "instructions": "Does a blanket, pillow, or toy cover both mouth and nose so the baby cannot breathe freely? Cloth on chin or body only is no.",
         "criteria": {
-            "true": "Mouth and nose are covered",
-            "false": "Mouth and nose are free",
+            "true": "Mouth and nose are covered; breathing may be blocked",
+            "false": "Baby can breathe freely",
         },
     },
     "climbing": {
@@ -398,8 +398,8 @@ def _self_check() -> None:
         assert item["type"] == "noul" and item["instructions"]
         assert set(item["criteria"]) == {"true", "false"}
         assert len(item["instructions"]) <= 140
-    assert "face-down" in questions()["face_in_bed"]["instructions"]
-    assert "fabric covering" in questions()["mouth_nose_blocked"]["instructions"]
+    assert "pressed into" in questions()["face_in_bed"]["instructions"]
+    assert "breathe freely" in questions()["mouth_nose_blocked"]["instructions"]
 
     cover = {
         "baby_present": {"type": "noul", "noul": 0.96},

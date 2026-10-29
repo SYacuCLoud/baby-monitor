@@ -15,7 +15,7 @@ TITLE = "아기"
 
 # JSON rule -> lock-screen line. Keep short.
 RULE_LINE = {
-    "face_cover": "입코 가림",
+    "face_cover": "호흡 방해",
     "climbing": "난간 기어오름",
     "empty": "아기 없음",
 }
@@ -99,7 +99,7 @@ if __name__ == "__main__":
     except ValueError:
         pass
     title, body = format_alert("face_cover", "이불이 코 쪽에 있다")
-    assert title == "아기" and body.startswith("입코 가림")
+    assert title == "아기" and body.startswith("호흡 방해")
     print("ok topic_file", ENV_PATH)
     print("subscribe in ntfy app:", t[:6] + "..." + " (full topic is in ntfy.env)")
     if "--ping" in sys.argv:

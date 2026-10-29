@@ -67,7 +67,7 @@ def format_tick(row: dict) -> str:
 
 
 RULE_KO = {
-    "face_cover": "입코 가림",
+    "face_cover": "호흡 방해",
     "climbing": "난간",
     "empty": "아무도 없음",
 }
@@ -1176,7 +1176,7 @@ def _check() -> None:
     assert missing is None
     head, detail = verdict_text({"should_alert": False, "baby_present": True, "face_visible": False, "rule": None, "reason": "x"})
     assert head == "알림 없음" and "아기 있음" in detail and "얼굴 안 보임" in detail
-    assert "입코 가림 0.76" in verdict_text({"should_alert": False, "scores": {"face_cover": 0.764}})[1]
+    assert "호흡 방해 0.76" in verdict_text({"should_alert": False, "scores": {"face_cover": 0.764}})[1]
     assert camera_view(False, {"camera": "ok"})[0] == "카메라 대기"
     assert camera_view(True, {"camera": "ok"}) == ("카메라 연결됨", "#14532d")
     assert camera_view(True, {"camera": "down"})[0] == "카메라 끊김"
