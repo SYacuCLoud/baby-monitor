@@ -280,7 +280,7 @@ def _print_tick(result: dict, action: str) -> None:
     keys = ("should_alert", "baby_present", "face_visible", "rule", "reason", "motion", "skipped")
     row = {
         "n": _TICK_N,
-        "ts": time.strftime("%H:%M:%S"),
+        "ts": time.strftime("%m-%d %H:%M:%S"),
         "action": action,
         **{k: result.get(k) for k in keys},
     }

@@ -63,7 +63,7 @@ def tail_ticks(path: Path, n: int = HISTORY) -> list[dict]:
 def format_tick(row: dict) -> str:
     rule = row.get("rule") or "-"
     alert = "알림" if row.get("should_alert") else "조용"
-    return f"{row.get('ts', '')}  {alert}  {rule}  {row.get('action', '')}"
+    return f"{format_tick_ts(row.get('ts', ''))}  {alert}  {rule}  {row.get('action', '')}"
 
 
 RULE_KO = {
@@ -110,6 +110,102 @@ def verdict_text(row: dict | None) -> tuple[str, str]:
 def format_test(row: dict) -> str:
     head, detail = verdict_text(row)
     return head if not detail else f"{head}\n{detail}"
+
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def format_tick_ts(ts: object) -> str:
+    """Show MM-DD HH:MM:SS when present; leave HH:MM:SS alone."""
+    text = str(ts or "").strip()
+    return text
+
+
+def collect_images(paths: list[Path]) -> list[Path]:
+    """Files and top-level folder images, stable order, deduped."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    for raw in paths:
+        path = Path(raw)
+        candidates: list[Path]
+        if path.is_dir():
+            candidates = sorted(
+                (p for p in path.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_EXTS),
+                key=lambda p: p.name.lower(),
+            )
+        elif path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+            candidates = [path]
+        else:
+            candidates = []
+        for item in candidates:
+            key = str(item.resolve()) if item.exists() else str(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def score_bits(row: dict | None) -> str:
+    scores = row.get("scores") if isinstance(row, dict) else None
+    if not isinstance(scores, dict):
+        return ""
+    order = ("face_cover", "climbing", "baby_present", "adult_present", "face_visible")
+    names = {"baby_present": "아기", "adult_present": "어른", "face_visible": "얼굴", **RULE_KO}
+    parts = [f"{names.get(k, k)} {float(scores[k]):.2f}" for k in order if k in scores]
+    return " ".join(parts)
+
+
+def format_batch_row(name: str, row: dict | None, fail: str | None = None) -> str:
+    if fail:
+        return f"{name}  실패  {fail}"
+    if not row:
+        return f"{name}  판정 없음"
+    if row.get("error"):
+        return f"{name}  실패  {row.get('reason') or ''}".rstrip()
+    alert = "알림" if row.get("should_alert") else "조용"
+    rule = RULE_KO.get(row.get("rule") or "", "-")
+    scores = score_bits(row)
+    return f"{name}  {alert}  {rule}" + (f"  {scores}" if scores else "")
+
+
+def batch_results_csv(rows: list[dict]) -> str:
+    """rows: {name, row, fail}. Pure CSV text with header."""
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        ["filename", "alert", "rule", "headline", "face_cover", "climbing",
+         "baby_present", "adult_present", "face_visible", "reason", "error"]
+    )
+    for item in rows:
+        name = item.get("name") or ""
+        fail = item.get("fail")
+        row = item.get("row") if isinstance(item.get("row"), dict) else None
+        if fail:
+            writer.writerow([name, "", "", "실패", "", "", "", "", "", fail, "1"])
+            continue
+        if not row:
+            writer.writerow([name, "", "", "판정 없음", "", "", "", "", "", "", ""])
+            continue
+        scores = row.get("scores") if isinstance(row.get("scores"), dict) else {}
+        head, _ = verdict_text(row)
+        writer.writerow([
+            name,
+            "1" if row.get("should_alert") else "0",
+            RULE_KO.get(row.get("rule") or "", row.get("rule") or ""),
+            head,
+            scores.get("face_cover", ""),
+            scores.get("climbing", ""),
+            scores.get("baby_present", ""),
+            scores.get("adult_present", ""),
+            scores.get("face_visible", ""),
+            row.get("reason") or "",
+            "1" if row.get("error") else "",
+        ])
+    return buf.getvalue()
 
 
 def image_from_clipboard(value) -> tuple[Image.Image | None, str | None]:
@@ -349,6 +445,10 @@ class App:
         self._hold_at = 0.0
         self._status_hold = False
         self._testing = False
+        self._batch_stop = False
+        self._batch_results: list[dict] = []
+        self._pil_image: Image.Image | None = None
+        self._img_box = (0, 0)
         self._busy = False
         self._stopping_server = False
         self._alive = True
@@ -365,13 +465,15 @@ class App:
         threading.Thread(target=self._poll_ports, daemon=True).start()
         self.refresh()
 
+
     def _build(self) -> None:
         body = ttk.Panedwindow(self.root, orient="horizontal")
         body.pack(fill="both", expand=True, padx=8, pady=8)
-        left = ttk.Frame(body)
+        left = ttk.Frame(body, width=380)
         right = ttk.Frame(body)
         body.add(left, weight=1)
-        body.add(right, weight=1)
+        body.add(right, weight=3)
+        self._panes = body
 
         model = ttk.LabelFrame(left, text="모델", padding=6)
         model.pack(fill="x")
@@ -410,37 +512,68 @@ class App:
         trow.pack(fill="x")
         self.btn_test_file = ttk.Button(trow, text="파일", command=self.test_file)
         self.btn_test_file.pack(side="left")
+        self.btn_test_folder = ttk.Button(trow, text="폴더", command=self.test_folder)
+        self.btn_test_folder.pack(side="left", padx=6)
         self.btn_test_clip = ttk.Button(trow, text="붙여넣기", command=self.test_clipboard)
         self.btn_test_clip.pack(side="left", padx=6)
         ttk.Label(trow, text="Ctrl+V", foreground="#57534e").pack(side="left", padx=8)
         self.root.bind("<Control-v>", lambda _e: self.test_clipboard())
+        brow = ttk.Frame(test)
+        brow.pack(fill="x", pady=(6, 0))
+        self.batch_progress = tk.StringVar(value="")
+        ttk.Label(brow, textvariable=self.batch_progress, anchor="w").pack(side="left")
+        self.btn_batch_stop = ttk.Button(brow, text="중지", command=self.stop_batch, width=6)
+        self.btn_batch_stop.pack(side="right")
+        self.btn_batch_csv = ttk.Button(brow, text="CSV", command=self.save_batch_csv, width=6)
+        self.btn_batch_csv.pack(side="right", padx=6)
+        self.btn_batch_copy = ttk.Button(brow, text="CSV복사", command=self.copy_batch_csv, width=8)
+        self.btn_batch_copy.pack(side="right")
 
-        vrow = ttk.Frame(left)
-        vrow.pack(fill="x", pady=(12, 0))
-        self.btn_copy = ttk.Button(vrow, text="복사", command=self.copy_verdict, width=6)
+        verdict = ttk.LabelFrame(left, text="판정", padding=6)
+        verdict.pack(fill="x", pady=(8, 0))
+        vtop = ttk.Frame(verdict)
+        vtop.pack(fill="x")
+        self.btn_copy = ttk.Button(vtop, text="복사", command=self.copy_verdict, width=6)
         self.btn_copy.pack(side="right", anchor="n")
-        texts = ttk.Frame(vrow)
+        texts = ttk.Frame(vtop)
         texts.pack(side="left", fill="both", expand=True)
-        self.headline = self._readonly_text(texts, height=1, font=("Segoe UI", 22, "bold"), fg="#14532d")
+        self.headline = self._readonly_text(texts, height=2, font=("Segoe UI", 16, "bold"), fg="#14532d")
         self.headline.pack(fill="x")
-        self.detail = self._readonly_text(texts, height=8, font=("Segoe UI", 12), fg="#1c1917")
-        self.detail.pack(fill="x")
+        self.detail = self._readonly_text(texts, height=6, font=("Segoe UI", 11), fg="#1c1917")
+        self.detail.pack(fill="x", pady=(4, 0))
         self._fill(self.headline, "판정 없음")
-        ttk.Label(left, textvariable=self.note, anchor="w").pack(fill="x", pady=(8, 0))
+
+        batch = ttk.LabelFrame(left, text="테스트 목록", padding=6)
+        batch.pack(fill="both", expand=True, pady=(8, 0))
+        self.batch_list = tk.Listbox(
+            batch, height=8, activestyle="none", selectmode="browse", exportselection=False,
+            font=("Segoe UI", 10),
+        )
+        self.batch_list.pack(fill="both", expand=True)
+        self.batch_list.bind("<<ListboxSelect>>", self.on_batch_select)
+
+        ttk.Label(left, textvariable=self.note, anchor="w").pack(fill="x", pady=(6, 0))
         ttk.Label(
             left,
-            text="의료기기 아님. 창을 닫으면 트레이로 갑니다. 종료는 트레이 메뉴. 푸시에는 사진이 없습니다.",
-            foreground="#57534e", wraplength=520, justify="left",
-        ).pack(fill="x", pady=(8, 0))
+            text="의료기기 아님. 창을 닫으면 트레이로. 종료는 트레이 메뉴. 테스트는 푸시·감시기록 없음.",
+            foreground="#57534e", wraplength=360, justify="left",
+        ).pack(fill="x", pady=(4, 0))
 
-        self.image = tk.Label(right, anchor="n")
-        self.image.pack(fill="both", expand=True)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=3)
+        right.rowconfigure(2, weight=1)
+        self.image = tk.Label(right, anchor="center", bg="#e7e5e4")
+        self.image.grid(row=0, column=0, sticky="nsew")
+        self.image.bind("<Configure>", self._on_image_configure)
         hrow = ttk.Frame(right)
-        hrow.pack(fill="x", pady=(8, 0))
+        hrow.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         ttk.Label(hrow, text="기록 (글자만, 최근 50)", anchor="w").pack(side="left")
         ttk.Button(hrow, text="복사", command=self.copy_history, width=6).pack(side="right")
-        self.history = tk.Listbox(right, height=12, activestyle="none", selectmode="extended", exportselection=False)
-        self.history.pack(fill="both", expand=True)
+        self.history = tk.Listbox(
+            right, height=10, activestyle="none", selectmode="extended", exportselection=False,
+            font=("Consolas", 10),
+        )
+        self.history.grid(row=2, column=0, sticky="nsew")
         self.history.bind("<Control-c>", lambda _e: self.copy_history())
         self.history.bind("<Control-C>", lambda _e: self.copy_history())
 
@@ -536,7 +669,13 @@ class App:
         self.radio_lightning.configure(state=radios)
         test = "normal" if state["test"] else "disabled"
         self.btn_test_file.configure(state=test)
+        self.btn_test_folder.configure(state=test)
         self.btn_test_clip.configure(state=test)
+        self.btn_batch_stop.configure(state="normal" if self._testing else "disabled")
+        has_batch = bool(self._batch_results)
+        csv_state = "normal" if has_batch else "disabled"
+        self.btn_batch_csv.configure(state=csv_state)
+        self.btn_batch_copy.configure(state=csv_state)
 
     def _paint_server(self) -> None:
         kind = self.kind.get()
@@ -696,44 +835,88 @@ class App:
             self.tray.pump()
         self.root.after(1000, self.refresh)
 
+
     def _preview(self) -> None:
         if self._hold_preview and not (FRAME.is_file() and FRAME.stat().st_mtime > self._hold_at):
             return
         self._hold_preview = False
         if not FRAME.is_file():
+            self._pil_image = None
             self.image.configure(image="", text="사진 없음")
+            self._photo = None
             return
         mtime = FRAME.stat().st_mtime
-        if mtime == self._photo_mtime:
+        if mtime == self._photo_mtime and self._pil_image is not None:
             return
         image = Image.open(FRAME).convert("RGB")
-        self._photo = ImageTk.PhotoImage(self._fit(image))
         self._photo_mtime = mtime
-        self.image.configure(image=self._photo, text="")
+        self._set_pil(image)
 
-    def _fit(self, image: Image.Image) -> Image.Image:
+    def _on_image_configure(self, event: tk.Event) -> None:
+        if event.widget is not self.image:
+            return
+        w, h = event.width, event.height
+        if abs(w - self._img_box[0]) < 4 and abs(h - self._img_box[1]) < 4:
+            return
+        self._img_box = (w, h)
+        if self._pil_image is not None:
+            self._render_pil()
+
+    def _fit(self, image: Image.Image, box: tuple[int, int] | None = None) -> Image.Image:
+        bw, bh = box if box is not None else self._img_box
+        if bw < 40 or bh < 40:
+            # widget not laid out yet — use a sensible default
+            bw = bh = max(PREVIEW // 2, 320)
         w, h = image.size
-        long_edge = max(w, h)
-        target = PREVIEW if long_edge > PREVIEW else max(long_edge, 560)
-        scale = target / long_edge
-        if abs(scale - 1) < 0.02:
+        scale = min(bw / w, bh / h)
+        nw = max(1, int(w * scale))
+        nh = max(1, int(h * scale))
+        if abs(nw - w) < 2 and abs(nh - h) < 2:
             return image
-        return image.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+        return image.resize((nw, nh), Image.Resampling.BILINEAR)
+
+    def _set_pil(self, image: Image.Image) -> None:
+        self._pil_image = image
+        self._render_pil()
+
+    def _render_pil(self) -> None:
+        if self._pil_image is None:
+            return
+        fitted = self._fit(self._pil_image)
+        self._photo = ImageTk.PhotoImage(fitted)
+        self.image.configure(image=self._photo, text="")
 
     def _show(self, image: Image.Image) -> None:
-        self._photo = ImageTk.PhotoImage(self._fit(image))
-        self.image.configure(image=self._photo, text="")
+        self._set_pil(image)
         self._hold_preview = True
         self._hold_at = time.time()
         self._status_hold = True
 
     def test_file(self) -> None:
-        path = filedialog.askopenfilename(
-            parent=self.root, filetypes=[("images", "*.jpg *.jpeg *.png *.webp"), ("all", "*.*")]
+        paths = filedialog.askopenfilenames(
+            parent=self.root,
+            filetypes=[("images", "*.jpg *.jpeg *.png *.webp *.bmp"), ("all", "*.*")],
         )
-        if not path:
+        if not paths:
             return
-        self._run_test(Image.open(path).convert("RGB"), Path(path).name)
+        files = collect_images([Path(p) for p in paths])
+        if not files:
+            self.note.set("이미지 파일이 없습니다.")
+            return
+        if len(files) == 1:
+            self._run_test(Image.open(files[0]).convert("RGB"), files[0].name)
+            return
+        self._start_batch(files)
+
+    def test_folder(self) -> None:
+        folder = filedialog.askdirectory(parent=self.root)
+        if not folder:
+            return
+        files = collect_images([Path(folder)])
+        if not files:
+            self.note.set("폴더에 이미지가 없습니다.")
+            return
+        self._start_batch(files)
 
     def test_clipboard(self) -> None:
         from PIL import ImageGrab
@@ -744,6 +927,156 @@ class App:
             return
         self._run_test(image)
 
+    def stop_batch(self) -> None:
+        if self._testing:
+            self._batch_stop = True
+            self.note.set("중지 요청… 현재 장만 끝냅니다.")
+
+    def copy_batch_csv(self) -> None:
+        if not self._batch_results:
+            self.note.set("복사할 테스트 결과가 없습니다.")
+            return
+        self._clipboard(batch_results_csv(self._batch_results))
+        self.note.set("테스트 CSV를 복사했습니다.")
+
+    def save_batch_csv(self) -> None:
+        if not self._batch_results:
+            self.note.set("저장할 테스트 결과가 없습니다.")
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv"), ("all", "*.*")],
+            initialfile="crib-test.csv",
+        )
+        if not path:
+            return
+        Path(path).write_text(batch_results_csv(self._batch_results), encoding="utf-8-sig")
+        self.note.set(f"CSV 저장: {Path(path).name}")
+
+    def on_batch_select(self, _event=None) -> None:
+        sel = self.batch_list.curselection()
+        if not sel:
+            return
+        idx = int(sel[0])
+        if idx < 0 or idx >= len(self._batch_results):
+            return
+        item = self._batch_results[idx]
+        path = item.get("path")
+        if path and Path(path).is_file():
+            try:
+                self._show(Image.open(path).convert("RGB"))
+            except OSError as exc:
+                self.note.set(f"이미지 열기 실패: {type(exc).__name__}")
+        row = item.get("row")
+        fail = item.get("fail")
+        if fail:
+            self._fill(self.headline, "판정 실패", "#9b1c1c")
+            self._fill(self.detail, str(fail))
+            self._status_hold = True
+            self._hold_at = time.time()
+        else:
+            self._apply_verdict(row, hold=True)
+
+    def _clear_batch_list(self) -> None:
+        self._batch_results = []
+        self.batch_list.delete(0, "end")
+        self.batch_progress.set("")
+
+    def _append_batch_item(self, item: dict) -> None:
+        self._batch_results.append(item)
+        self.batch_list.insert("end", format_batch_row(item.get("name") or "", item.get("row"), item.get("fail")))
+        self.batch_list.see("end")
+
+    def _start_batch(self, files: list[Path]) -> None:
+        if self._testing:
+            self.note.set("테스트가 아직 돌아가는 중입니다.")
+            return
+        if not self._port_up(self.kind.get()):
+            self.note.set("서버가 꺼져 있어서 테스트하지 않습니다.")
+            return
+        self._clear_batch_list()
+        self._batch_stop = False
+        self._testing = True
+        self._sync_controls()
+        self.note.set("테스트입니다. 푸시하지 않았고, 감시 기록에도 넣지 않습니다.")
+        kind = self.kind.get()
+        total = len(files)
+
+        def work() -> None:
+            from judge import ask
+
+            for i, path in enumerate(files, 1):
+                if self._batch_stop:
+                    break
+                name = path.name
+
+                def mark(msg: str, n=i, nm=name) -> None:
+                    self.batch_progress.set(f"{n}/{total}  {nm}")
+                    self._fill(self.headline, "판정 중", "#333333")
+                    self._fill(self.detail, msg)
+                    self.note.set(f"테스트 {n}/{total}")
+
+                self.root.after(0, lambda n=i, nm=name: mark("판정 중", n, nm))
+                try:
+                    image = Image.open(path).convert("RGB")
+                except OSError as exc:
+                    item = {"path": str(path), "name": name, "row": None, "fail": f"{type(exc).__name__}: {exc}"}
+                    self.root.after(0, lambda it=item, n=i: self._batch_one_done(it, n, total, None))
+                    continue
+
+                self.root.after(0, lambda im=image: self._show(im))
+                prev = os.environ.get("CRIB_MODEL")
+                os.environ["CRIB_MODEL"] = kind
+                try:
+                    result = ask(image)
+                    fail = None
+                    log_judgment(result, kind, "gui-test", image, name)
+                except Exception as exc:
+                    result = None
+                    fail = f"{type(exc).__name__}: {exc}"
+                finally:
+                    if prev is None:
+                        os.environ.pop("CRIB_MODEL", None)
+                    else:
+                        os.environ["CRIB_MODEL"] = prev
+                item = {"path": str(path), "name": name, "row": result, "fail": fail}
+                self.root.after(0, lambda it=item, n=i, im=image: self._batch_one_done(it, n, total, im))
+
+            self.root.after(0, self._batch_finished)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _batch_one_done(self, item: dict, n: int, total: int, image: Image.Image | None) -> None:
+        self._append_batch_item(item)
+        self.batch_progress.set(f"{n}/{total}")
+        self.batch_list.selection_clear(0, "end")
+        self.batch_list.selection_set("end")
+        self.batch_list.activate("end")
+        if image is not None:
+            self._show(image)
+        if item.get("fail"):
+            self._fill(self.headline, "판정 실패", "#9b1c1c")
+            self._fill(self.detail, str(item["fail"]))
+            self._status_hold = True
+            self._hold_at = time.time()
+        else:
+            self._apply_verdict(item.get("row"), hold=True)
+        self._sync_controls()
+
+    def _batch_finished(self) -> None:
+        self._testing = False
+        stopped = self._batch_stop
+        self._batch_stop = False
+        self._sync_controls()
+        done = len(self._batch_results)
+        if stopped:
+            self.note.set(f"테스트를 중지했습니다. {done}장 완료. 푸시·감시기록 없음.")
+            self.batch_progress.set(f"중지 {done}")
+        else:
+            self.note.set(f"테스트 {done}장 완료. 푸시하지 않았고, 감시 기록에도 넣지 않았습니다.")
+            self.batch_progress.set(f"완료 {done}/{done}" if done else "")
+
     def _run_test(self, image: Image.Image, name: str | None = None) -> None:
         if self._testing:
             self.note.set("테스트가 아직 돌아가는 중입니다.")
@@ -751,6 +1084,7 @@ class App:
         if not self._port_up(self.kind.get()):
             self.note.set("서버가 꺼져 있어서 테스트하지 않습니다.")
             return
+        self._clear_batch_list()
         self._testing = True
         self._sync_controls()
         self._show(image)
@@ -758,6 +1092,7 @@ class App:
         self._fill(self.headline, "판정 중", "#333333")
         self.note.set("폰으로는 보내지 않습니다.")
         kind = self.kind.get()
+        label = name or "clipboard"
 
         def work() -> None:
             from judge import ask
@@ -767,7 +1102,7 @@ class App:
             try:
                 result = ask(image)
                 fail = None
-                log_judgment(result, kind, "gui-test", image, name or "clipboard")  # never raises
+                log_judgment(result, kind, "gui-test", image, label)
             except Exception as exc:
                 result = None
                 fail = f"{type(exc).__name__}: {exc}"
@@ -780,6 +1115,8 @@ class App:
             def done() -> None:
                 self._testing = False
                 self._sync_controls()
+                item = {"path": None, "name": label, "row": result, "fail": fail}
+                self._append_batch_item(item)
                 if fail:
                     self._fill(self.headline, "판정 실패", "#9b1c1c")
                     self._fill(self.detail, fail)
@@ -792,6 +1129,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _apply_verdict(self, row: dict | None, hold: bool = False) -> None:
+
         head, detail = verdict_text(row)
         alert = bool(row and row.get("should_alert"))
         self._fill(self.headline, head, "#9b1c1c" if alert else "#14532d")
@@ -813,9 +1151,9 @@ class App:
 def _check() -> None:
     sample = DIR / "frames" / "_gui_check.jsonl"
     sample.parent.mkdir(parents=True, exist_ok=True)
-    sample.write_text('{"ts":"01:02:03","should_alert":false,"rule":null,"action":"quiet"}\nnot-json\n', encoding="utf-8")
+    sample.write_text('{"ts":"10-28 01:02:03","should_alert":false,"rule":null,"action":"quiet"}\nnot-json\n', encoding="utf-8")
     rows = tail_ticks(sample, 50)
-    assert len(rows) == 1 and format_tick(rows[0]).startswith("01:02:03")
+    assert len(rows) == 1 and format_tick(rows[0]).startswith("10-28 01:02:03")
     sample.unlink()
     assert "imajev_serve.py" in " ".join(server_argv("jev"))
     assert "llama-server" in server_argv("qwen")[0]
@@ -855,6 +1193,28 @@ def _check() -> None:
     assert not on["server_start"] and on["server_stop"] and on["watch_start"] and on["test"]
     busy = control_state("끄는 중", False, True, False)
     assert not busy["server_start"] and not busy["server_stop"] and not busy["radios"]
+    # batch helpers
+    tmp = DIR / "frames" / "_gui_img_check"
+    tmp.mkdir(parents=True, exist_ok=True)
+    (tmp / "a.jpg").write_bytes(b"x")
+    (tmp / "b.PNG").write_bytes(b"x")
+    (tmp / "skip.txt").write_bytes(b"x")
+    got = collect_images([tmp, tmp / "a.jpg"])
+    assert [p.name for p in got] == ["a.jpg", "b.PNG"]
+    assert collect_images([tmp / "skip.txt"]) == []
+    for p in tmp.iterdir():
+        p.unlink()
+    tmp.rmdir()
+    assert format_tick_ts("10-28 23:43:01") == "10-28 23:43:01"
+    assert format_tick_ts("23:43:01") == "23:43:01"
+    assert "알림" in format_batch_row("x.jpg", {"should_alert": True, "rule": "face_cover", "scores": {"face_cover": 0.8}})
+    assert "실패" in format_batch_row("x.jpg", None, "boom")
+    csv_text = batch_results_csv([
+        {"name": "a.jpg", "row": {"should_alert": False, "rule": None, "scores": {"climbing": 0.1}, "reason": "ok"}, "fail": None},
+        {"name": "b.jpg", "row": None, "fail": "err"},
+    ])
+    assert csv_text.splitlines()[0].startswith("filename,")
+    assert "a.jpg" in csv_text and "b.jpg" in csv_text and "err" in csv_text
     print("ok crib-gui")
 
 
@@ -863,7 +1223,8 @@ def main() -> None:
         _check()
         return
     root = tk.Tk()
-    root.geometry("1180x780")
+    root.geometry("1100x720")
+    root.minsize(900, 560)
     App(root)
     root.mainloop()
 
