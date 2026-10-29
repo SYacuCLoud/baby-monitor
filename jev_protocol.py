@@ -34,6 +34,7 @@ DEFAULT_URL = "http://127.0.0.1:8090/v1/systemone"
 ALERT_AT = 0.60
 ABSENT_AT = 0.30
 PRESENT_AT = 0.50
+HIDDEN_BABY_AT = 0.90
 _RULES = ("face_cover", "climbing")
 _FIELDS = _RULES + ("baby_present", "adult_present", "face_visible")
 _COVER_PARTS = ("face_in_bed", "mouth_nose_blocked")
@@ -154,6 +155,12 @@ def verdict_from_answers(answers: dict) -> dict:
         "face_cover": max(raw[key] for key in _COVER_PARTS),
     }
     fired = [key for key in _RULES if scores[key] >= alert_at(key)]
+    # No alert when an adult is with the baby. With no baby seen, only a very
+    # strong cover score (baby under a blanket) still alerts.
+    if scores["adult_present"] >= PRESENT_AT:
+        fired = []
+    elif scores["baby_present"] < ABSENT_AT and scores["face_cover"] < HIDDEN_BABY_AT:
+        fired = []
     alert = False
     rule = None
     if fired:
@@ -163,7 +170,6 @@ def verdict_from_answers(answers: dict) -> dict:
         scores["baby_present"] < ABSENT_AT and scores["adult_present"] < ABSENT_AT
     ):
         rule = "empty"
-        alert = True
     got = normalize(
         {
             "should_alert": alert,
@@ -416,7 +422,7 @@ def _self_check() -> None:
     assert verdict_from_answers(unsure)["should_alert"] is False
     empty = {key: {"noul": 0.05} for key in _ASKED}
     got = verdict_from_answers(empty)
-    assert got["should_alert"] is True and got["rule"] == "empty" and got["baby_present"] is False
+    assert got["should_alert"] is False and got["rule"] is None and got["baby_present"] is False
     clash = {key: {"noul": 0.05} for key in _ASKED}
     clash["mouth_nose_blocked"] = {"noul": 0.95}
     clash["baby_present"] = {"noul": 0.10}
@@ -427,6 +433,11 @@ def _self_check() -> None:
     clash["mouth_nose_blocked"] = {"noul": 0.05}
     clash["climbing"] = {"noul": 0.95}
     assert verdict_from_answers(clash)["should_alert"] is False  # climbing needs a visible baby
+    blank = {key: {"noul": 0.04} for key in _ASKED}
+    blank["mouth_nose_blocked"] = {"noul": 0.64}
+    assert verdict_from_answers(blank)["should_alert"] is False  # empty crib, cover noise
+    held = dict(cover, adult_present={"noul": 0.96})
+    assert verdict_from_answers(held)["should_alert"] is False  # adult with baby
     prev_env = os.environ.get("CRIB_JEV_ALERT_AT_FACE_COVER")
     try:
         os.environ.pop("CRIB_JEV_ALERT_AT_FACE_COVER", None)
